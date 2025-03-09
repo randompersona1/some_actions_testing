@@ -10,7 +10,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
+            image: https://quay.io/repository/pypa/manylinux2014_x86_64
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
