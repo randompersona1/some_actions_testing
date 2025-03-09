@@ -19,13 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-      - name: Install Linux specific dependencies for dbus-python
-        if: matrix.TARGET == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev
-          pkg-config --cflags --libs dbus-1
-          export LDFLAGS="-lm"
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
