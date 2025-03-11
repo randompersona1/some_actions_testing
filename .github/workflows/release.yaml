@@ -132,7 +132,7 @@ jobs:
             --icon-size 128 \
             --text-size 14 \
             --icon "USDB_Syncer-0.11.0-${{matrix.TARGET}}.app" 175 120 \
-            --hide-extension "USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.app" \
+            --hide-extension "USDB_Syncer-0.11.0-${{matrix.TARGET}}.app" \
             --app-drop-link 425 120 \
             --hdiutil-quiet \
             --no-internet-enable \
