@@ -20,6 +20,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+      # Cache Python build to avoid downloading and rebuilding Python each time
+      - name: Cache Python build
+        uses: actions/cache@v2
+        with:
+          path: |
+            /usr/local/lib/python3.12
+            /usr/local/bin/python3.12
+            /usr/local/bin/pip3.12
+            /usr/local/lib/python3.12/site-packages
+            ~/.cache/pip
+          key: ${{ runner.os }}-python-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-python-
       - name: Build Python 3.12.9
         run: |
           yum update -y
