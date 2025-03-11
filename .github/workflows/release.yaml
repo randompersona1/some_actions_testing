@@ -148,3 +148,13 @@ jobs:
           name: ${{ matrix.os }}-artifacts
           path: |
             dist/*Linux
+
+  release:
+    name: Create release
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Mock release"
+        run: echo "Mock release"
