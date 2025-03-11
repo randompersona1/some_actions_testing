@@ -16,11 +16,20 @@ jobs:
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
+              --add-binary '/usr/lib64/libva*.so*:.'
+              --add-binary '/usr/lib64/dri/*.so:dri'
               --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+      - name: Cache Python build
+        id: cache-python
+        uses: actions/cache@v3
+        with:
+          path: /usr/local/bin/python3.12
+          key: python-3.12.9-${{ runner.os }}-${{ hashFiles('*/.python-version') }}
       - name: Build Python 3.12.9
+        if: steps.cache-python.outputs.cache-hit != 'true'
         run: |
           yum update -y
           yum groupinstall 'Development Tools' -y
@@ -32,6 +41,8 @@ jobs:
           make
           make install
           ldconfig /usr/local/lib
+      - name: Set up python symlinks
+        run: |
           ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12
           ln -sf /usr/local/bin/pip3.12 /usr/bin/pip3.12
           ln -sf /usr/local/bin/python3.12 /usr/bin/python3
