@@ -42,6 +42,7 @@ jobs:
     name: Build packages
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.image }}
+    needs: scrape-song-list
     strategy:
       matrix:
         include:
