@@ -31,8 +31,6 @@ jobs:
             /usr/local/lib/python3.12/site-packages
             ~/.cache/pip
           key: ${{ runner.os }}-python-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-python-
       - name: Build Python 3.12.9
         run: |
           yum update -y
