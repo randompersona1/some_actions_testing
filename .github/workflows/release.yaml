@@ -22,7 +22,7 @@ jobs:
       - uses: actions/download-artifact@v4
       # Cache Python build to avoid downloading and rebuilding Python each time
       - name: Cache Python build
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             /usr/local/lib/python3.12
