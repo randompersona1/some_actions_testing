@@ -26,6 +26,7 @@ jobs:
           ln -sf /opt/python/cp312-cp312/bin/pip3 /usr/bin/pip3
           ln -sf /opt/python/cp312-cp312/bin/python3 /usr/bin/python
           ln -sf /opt/python/cp312-cp312/bin/pip3 /usr/bin/pip
+          yum install -y python3-devel
       - name: Install poetry
         run: |
           python -m pip install poetry
