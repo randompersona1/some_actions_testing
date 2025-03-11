@@ -143,6 +143,8 @@ jobs:
           name: ${{ matrix.os }}-artifacts
           path: |
             dist/*Linux
+            dist/*.dmg
+            dist/*.exe
 
   release:
     name: Create release
