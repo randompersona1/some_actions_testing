@@ -12,7 +12,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            image: ubuntu:20.04
+            image: quay.io/pypa/manylinux_2_34_x86_64
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
@@ -21,15 +21,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
       - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.7.*"
-          setup-python: false
-          no-qt-binaries: true
+        run: |
+          ln -sf /opt/python/cp312-cp312/bin/python3 /usr/bin/python3
+          ln -sf /opt/python/cp312-cp312/bin/pip3 /usr/bin/pip3
+          ln -sf /opt/python/cp312-cp312/bin/python3 /usr/bin/python
+          ln -sf /opt/python/cp312-cp312/bin/pip3 /usr/bin/pip
       - name: Install poetry
         run: |
           python -m pip install poetry
