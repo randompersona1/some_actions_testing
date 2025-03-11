@@ -29,6 +29,7 @@ jobs:
       - name: Install poetry
         run: |
           python -m pip install poetry
+          ln -sf /opt/python/cp312-cp312/bin/poetry /usr/bin/poetry
       - name: Install dependencies
         run: |
           poetry install --without dev
