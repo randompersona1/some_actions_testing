@@ -4,6 +4,40 @@ on:
   push:
 
 jobs:
+  scrape-song-list:
+    name: Scrape USDB song list
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Linux specific dependencies for dbus-python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc python3-dev libdbus-1-dev libglib2.0-dev
+          pkg-config --cflags --libs dbus-1
+          export LDFLAGS="-lm"
+      - name: Install poetry
+        run: |
+          python -m pip install poetry
+      - name: Install dependencies
+        run: |
+          poetry install --without dev --without build
+      - name: Scrape USDB song list to ship with the bundle
+        run: >
+          poetry run generate_song_list_json
+          -t 'song_list.json'
+          -u '${{ secrets.USDB_USER }}'
+          -p '${{ secrets.USDB_PASSWORD }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts
+          path: |
+            song_list.json
+            CHANGELOG.md
+
   build:
     name: Build packages
     runs-on: ${{ matrix.os }}
@@ -16,22 +50,39 @@ jobs:
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
+              --add-data 'artifacts/song_list.json:data'
               --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
+          - os: macos-latest
+            TARGET: macOS-arm64
+            PYINSTALLER_ARGS: >-
+              --windowed
+              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
+              --add-data 'artifacts/song_list.json:data'
+              --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
+          - os: macos-13
+            TARGET: macOS-x64
+            PYINSTALLER_ARGS: >-
+              --windowed
+              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
+              --add-data 'artifacts/song_list.json:data'
+              --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
+          - os: windows-latest
+            TARGET: Windows
+            PYINSTALLER_ARGS: >-
+              --onefile
+              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
+              --add-data 'artifacts/song_list.json;data'
+              --add-data 'src/usdb_syncer/db/sql;src/usdb_syncer/db/sql'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-      # Cache Python build to avoid downloading and rebuilding Python each time
-      - name: Cache Python build
-        uses: actions/cache@v4
+      - name: On macOS and windows, install python normally
+        if: contains(matrix.os, 'macos') || contains(matrix.os, 'windows')
+        uses: actions/setup-python@v5
         with:
-          path: |
-            /usr/local/lib/python3.12
-            /usr/local/bin/python3.12
-            /usr/local/bin/pip3.12
-            /usr/local/lib/python3.12/site-packages
-            ~/.cache/pip
-          key: ${{ runner.os }}-python-${{ hashFiles('**/pyproject.toml') }}
-      - name: Build Python 3.12.9
+          python-version: "3.12.9"
+      - name: Build Python 3.12.9 on linux
+        if: contains(matrix.os, 'linux')
         run: |
           yum update -y
           yum groupinstall 'Development Tools' -y
@@ -43,8 +94,7 @@ jobs:
           make
           make install
           ldconfig /usr/local/lib
-      - name: Set up python symlinks
-        run: |
+
           ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12
           ln -sf /usr/local/bin/pip3.12 /usr/bin/pip3.12
           ln -sf /usr/local/bin/python3.12 /usr/bin/python3
@@ -56,7 +106,6 @@ jobs:
       - name: Install poetry
         run: |
           python -m pip install poetry
-          ln -sf /opt/python/cp312-cp312/bin/poetry /usr/bin/poetry
       - name: Install dependencies
         run: |
           poetry install --without dev
@@ -64,7 +113,7 @@ jobs:
         run: >
           poetry run write_release_info
           -p src/usdb_syncer/constants.py
-          -v 0.11.1
+          -v 0.11.0
           -c ${{ github.workflow_sha }}
       - name: Generate GUI elements
         run: poetry run generate_pyside_files
@@ -72,10 +121,28 @@ jobs:
         # _tkinter hook is run erroneously?
         run: >
           poetry run pyinstaller
-          -n 'USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}'
+          -n 'USDB_Syncer-0.11.0-${{matrix.TARGET}}'
           --exclude-module _tkinter
           ${{matrix.PYINSTALLER_ARGS}}
           src/usdb_syncer/gui/__init__.py
+      - name: Create DMG
+        if: contains(matrix.TARGET, 'macOS')
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "USDB Syncer" \
+            --volicon "src/usdb_syncer/gui/resources/appicon_128x128.png" \
+            --window-pos 200 120 \
+            --window-size 600 300 \
+            --icon-size 128 \
+            --text-size 14 \
+            --icon "USDB_Syncer-0.11.0-${{matrix.TARGET}}.app" 175 120 \
+            --hide-extension "USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.app" \
+            --app-drop-link 425 120 \
+            --hdiutil-quiet \
+            --no-internet-enable \
+            "dist/USDB_Syncer-0.11.0-${{matrix.TARGET}}.dmg" \
+            "dist/USDB_Syncer-0.11.0-${{matrix.TARGET}}.app"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-artifacts
