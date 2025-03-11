@@ -24,7 +24,7 @@ jobs:
         run: |
           yum update -y
           yum groupinstall 'Development Tools' -y
-          yum install libva libva-drm libva-x11 mesa-libGL openssl-devel bzip2-devel libffi-devel sqlite-devel wget -y
+          yum install libva mesa-libGLU libX11 libXext libXrender mesa-libGL openssl-devel bzip2-devel libffi-devel sqlite-devel wget -y
           wget https://www.python.org/ftp/python/3.12.9/Python-3.12.9.tgz
           tar xvf Python-3.12.9.tgz
           cd Python-3.12.9
