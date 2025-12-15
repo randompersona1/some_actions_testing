@@ -1,7 +1,9 @@
 name: Release
 
 on:
-  push:
+  pull_request:
+    branches:
+      - main
 
 jobs:
   scrape-song-list:
@@ -108,7 +110,7 @@ jobs:
         run: >
           poetry run write_release_info
           -p src/usdb_syncer/constants.py
-          -v 0.11.0
+          -v ${{ github.ref_name }}
           -c ${{ github.workflow_sha }}
       - name: Generate GUI elements
         run: poetry run generate_pyside_files
