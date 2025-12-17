@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run (no release, publish to TestPyPI)'
+        description: "Dry run (no release, publish to TestPyPI)"
         required: true
         default: true
         type: boolean
@@ -137,7 +137,7 @@ jobs:
       - name: Add uv to PATH
         run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Install dependencies
-        run: uv sync --no-dev
+        run: uv sync --no-dev --group bundle --group build
       - name: Set macOS deployment target (macOS 12+ compatibility)
         if: startsWith(matrix.os, 'macos')
         run: echo "MACOSX_DEPLOYMENT_TARGET=12.0" >> $GITHUB_ENV
