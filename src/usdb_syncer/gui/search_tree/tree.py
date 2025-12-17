@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QModelIndex, Qt
 
-from usdb_syncer import db, events
+from usdb_syncer import db
+from usdb_syncer.gui import events
 from usdb_syncer.gui.gui_utils import keyboard_modifiers
 
 from .item import Filter, SavedSearch
@@ -60,9 +62,8 @@ class FilterTree:
         )
 
     def _restore_saved_search(self, event: events.SavedSearchRestored) -> None:
-        for filt in self._model.root.children:
-            for changed in filt.set_checked_children(event.search):
-                self._model.emit_item_changed(changed)
+        for changed in self._model.root.apply_search(event.search):
+            self._model.emit_item_changed(changed)
 
     def _on_click(self, index: QModelIndex) -> None:
         if not (
@@ -84,8 +85,7 @@ class FilterTree:
             descending=self._search.descending,
             text=self._search.text,
         )
-        for filt in self._model.root.children:
-            filt.build_search(self._search)
+        self._model.root.build_search(self._search)
         events.TreeFilterChanged(self._search).post()
 
     def _context_menu(self, _pos: QtCore.QPoint) -> None:

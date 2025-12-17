@@ -1,13 +1,11 @@
 """Dialog for adding custom sync meta data."""
 
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6 import QtWidgets
 
 from usdb_syncer.custom_data import CustomData
 from usdb_syncer.gui.forms.CustomDataDialog import Ui_Dialog
-
-FORBIDDEN_CHARS = '?"<>|*.:/\\'
 
 
 class CustomDataDialog(Ui_Dialog, QtWidgets.QDialog):
@@ -30,13 +28,10 @@ class CustomDataDialog(Ui_Dialog, QtWidgets.QDialog):
         value = self.edit_value.text().strip()
         if not key or not value:
             warning = "Both key and value must be supplied!"
-            QtWidgets.QMessageBox.warning(
-                self, "Warning", "Both key and value must be supplied!"
-            )
         elif not CustomData.is_valid_key(key):
             warning = (
                 "Key must not contain any of these characters: "
-                + CustomData.FORBIDDEN_KEY_CHARS
+                + CustomData.FORBIDDEN_CHARACTERS
             )
         else:
             self._on_accept(key, value)

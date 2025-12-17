@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, assert_never
+from typing import TYPE_CHECKING, assert_never
 
 import attrs
 
-from usdb_syncer import errors, utils
+from usdb_syncer import errors, settings, utils
 from usdb_syncer.custom_data import CustomData
 
 if TYPE_CHECKING:
     from usdb_syncer.usdb_song import UsdbSong
 
 FORBIDDEN_CHARACTERS = '?"<>|*.'
-INITIALS_FORBIDDEN_CHARACTERS = " "
-
 UNKNOWN_PLACEHOLDER_STRING = "None"
 
 
@@ -83,6 +82,10 @@ class PathTemplate:
     @classmethod
     def default(cls) -> PathTemplate:
         return cls.parse(cls.default_str)
+
+    @classmethod
+    def from_settings(cls) -> PathTemplate:
+        return settings.get_path_template(cls.default())
 
     def __str__(self) -> str:
         return " / ".join(map(str, self._components))
@@ -162,7 +165,7 @@ class PathTemplatePlaceholder(PathTemplateComponentToken, enum.Enum):
         except ValueError as error:
             raise InvalidPlaceholderError(name) from error
 
-    def evaluate(self, song: UsdbSong) -> str:
+    def evaluate(self, song: UsdbSong) -> str:  # noqa: C901
         match self:
             case PathTemplatePlaceholder.SONG_ID:
                 return str(song.song_id)
@@ -171,10 +174,10 @@ class PathTemplatePlaceholder(PathTemplateComponentToken, enum.Enum):
                     return song.artist
                 return UNKNOWN_PLACEHOLDER_STRING
             case PathTemplatePlaceholder.ARTIST_INITIAL:
-                for char in song.artist:
-                    if char not in INITIALS_FORBIDDEN_CHARACTERS:
-                        return char
-                return UNKNOWN_PLACEHOLDER_STRING
+                return (
+                    utils.get_first_alphanum_upper(song.artist)
+                    or UNKNOWN_PLACEHOLDER_STRING
+                )
             case PathTemplatePlaceholder.TITLE:
                 if song.title and len(song.title) > 0:
                     return song.title
@@ -194,9 +197,9 @@ class PathTemplatePlaceholder(PathTemplateComponentToken, enum.Enum):
                     return song.edition
                 return UNKNOWN_PLACEHOLDER_STRING
             case PathTemplatePlaceholder.RATING:
-                if (
-                    song.rating
-                ):  # This is annoying because we can't differentiate between a rating of 0 and no rating. Would take a refactor of UsdbSong to fix.
+                # This is annoying because we can't differentiate between a rating of 0
+                # and no rating. Would take a refactor of UsdbSong to fix.
+                if song.rating:
                     return str(song.rating)
                 return UNKNOWN_PLACEHOLDER_STRING
             case _ as unreachable:
@@ -226,4 +229,4 @@ class PathTemplateCustomPlaceholder(PathTemplateComponentToken):
 
     @classmethod
     def options(cls) -> Iterable[PathTemplateCustomPlaceholder]:
-        return (cls(k) for k in CustomData.key_options())
+        return (cls(k) for k in sorted(CustomData.key_options()))

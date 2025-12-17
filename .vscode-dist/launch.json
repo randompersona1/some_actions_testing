@@ -6,19 +6,17 @@
   "configurations": [
     {
       "name": "GUI",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/src/usdb_syncer/gui/__init__.py",
       "console": "internalConsole",
-      "justMyCode": true,
-      "env": {
-        // print every executed SQL statement
+      "justMyCode": false,
+      "redirectOutput": true,
+      "args": [
+        // "--profile",
         // "TRACESQL": "1",
-        // profile runtime performance
-        // "PROFILE": "1",
-        // overwrite song folder from settings
         // "SONG_DIR": "c:/path/to/song_dir",
-      }
+      ]
     }
   ]
 }

@@ -1,7 +1,8 @@
 """Table model for song data."""
 
+from collections.abc import Iterable
 from functools import cache
-from typing import Any, Iterable, assert_never
+from typing import Any, assert_never
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -12,9 +13,12 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QIcon
 
-from usdb_syncer import SongId, events, utils
+from usdb_syncer import SongId, events
+from usdb_syncer.db import JobStatus, ResourceKind
+from usdb_syncer.gui import icons
 from usdb_syncer.gui.song_table.column import Column
-from usdb_syncer.usdb_song import DownloadStatus, UsdbSong
+from usdb_syncer.sync_meta import Resource
+from usdb_syncer.usdb_song import UsdbSong
 
 QIndex = QModelIndex | QPersistentModelIndex
 
@@ -22,7 +26,7 @@ QIndex = QModelIndex | QPersistentModelIndex
 class TableModel(QAbstractTableModel):
     """Table model for song data."""
 
-    _ids: tuple[SongId, ...] = tuple()
+    _ids: tuple[SongId, ...] = ()
     _rows: dict[SongId, int]
 
     def __init__(self, parent: QObject) -> None:
@@ -75,12 +79,16 @@ class TableModel(QAbstractTableModel):
         self._ids = self._ids[:row] + self._ids[row + 1 :]
         self.endRemoveRows()
 
-    ### QAbstractTableModel implementation
+    # QAbstractTableModel implementation
 
-    def columnCount(self, parent: QIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QIndex | None = None) -> int:  # noqa: N802
+        if parent is None:
+            parent = QModelIndex()
         return 0 if parent.isValid() else len(Column)
 
-    def rowCount(self, parent: QIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QIndex | None = None) -> int:  # noqa: N802
+        if parent is None:
+            parent = QModelIndex()
         return 0 if parent.isValid() else len(self._ids)
 
     def data(self, index: QIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
@@ -90,6 +98,9 @@ class TableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.DecorationRole:
             if song := self._get_song(index):
                 return _decoration_data(song, index.column())
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if song := self._get_song(index):
+                return _tooltip_data(song, index.column())
         return None
 
     def _get_song(self, index: QIndex) -> UsdbSong | None:
@@ -100,7 +111,7 @@ class TableModel(QAbstractTableModel):
             return song
         return None
 
-    def headerData(
+    def headerData(  # noqa: N802
         self,
         section: int,
         orientation: Qt.Orientation,
@@ -115,7 +126,7 @@ class TableModel(QAbstractTableModel):
         return None
 
 
-def _display_data(song: UsdbSong, column: int) -> str | None:
+def _display_data(song: UsdbSong, column: int) -> str | None:  # noqa: C901
     col = Column(column)
     match col:
         case Column.SONG_ID:
@@ -143,11 +154,7 @@ def _display_data(song: UsdbSong, column: int) -> str | None:
         case Column.TAGS:
             return song.tags
         case Column.DOWNLOAD_STATUS:
-            return (
-                utils.format_timestamp(song.sync_meta.mtime)
-                if song.sync_meta and song.status is DownloadStatus.NONE
-                else str(song.status)
-            )
+            return str(song.status)
         case (
             Column.SAMPLE_URL
             | Column.TXT
@@ -162,7 +169,7 @@ def _display_data(song: UsdbSong, column: int) -> str | None:
             assert_never(unreachable)
 
 
-def _decoration_data(song: UsdbSong, column: int) -> QIcon | None:
+def _decoration_data(song: UsdbSong, column: int) -> QIcon | None:  # noqa: C901
     col = Column(column)
     match col:
         case (
@@ -182,38 +189,110 @@ def _decoration_data(song: UsdbSong, column: int) -> QIcon | None:
         ):
             return None
         case Column.SAMPLE_URL:
-            if song.sync_meta and song.sync_meta.audio:
-                suffix = "-local"
+            local = bool(
+                song.sync_meta and song.sync_meta.resource_is_local(ResourceKind.AUDIO)
+            )
+            if song.is_playing and local:
+                icon = icons.Icon.PAUSE_LOCAL
+            elif song.is_playing:
+                icon = icons.Icon.PAUSE_REMOTE
+            elif local:
+                icon = icons.Icon.PLAY_LOCAL
             elif song.sample_url:
-                suffix = ""
+                icon = icons.Icon.PLAY_REMOTE
             else:
                 return None
-            action = "pause" if song.is_playing else "play"
-            return icon(f":/icons/control-{action}{suffix}.png")
         case Column.TXT:
-            return icon(":/icons/tick.png", bool(song.sync_meta and song.sync_meta.txt))
+            if not (song.sync_meta and (txt := song.sync_meta.txt)):
+                return None
+            icon = status_icon(txt)
         case Column.AUDIO:
-            return icon(
-                ":/icons/tick.png", bool(song.sync_meta and song.sync_meta.audio)
-            )
+            if not (song.sync_meta and (audio := song.sync_meta.audio)):
+                return None
+            icon = status_icon(audio)
         case Column.VIDEO:
-            return icon(
-                ":/icons/tick.png", bool(song.sync_meta and song.sync_meta.video)
-            )
+            if not (song.sync_meta and (video := song.sync_meta.video)):
+                return None
+            icon = status_icon(video)
         case Column.COVER:
-            return icon(
-                ":/icons/tick.png", bool(song.sync_meta and song.sync_meta.cover)
-            )
+            if not (song.sync_meta and (cover := song.sync_meta.cover)):
+                return None
+            icon = status_icon(cover)
         case Column.BACKGROUND:
-            return icon(
-                ":/icons/tick.png", bool(song.sync_meta and song.sync_meta.background)
-            )
+            if not (song.sync_meta and (background := song.sync_meta.background)):
+                return None
+            icon = status_icon(background)
         case Column.PINNED:
-            return icon(
-                ":/icons/pin.png", bool(song.sync_meta and song.sync_meta.pinned)
-            )
+            if not (song.sync_meta and song.sync_meta.pinned):
+                return None
+            icon = icons.Icon.PIN
         case _ as unreachable:
             assert_never(unreachable)
+    return icon.icon()
+
+
+def status_icon(resource: Resource) -> icons.Icon:
+    match resource.status:
+        case JobStatus.SUCCESS | JobStatus.SUCCESS_UNCHANGED:
+            icon = icons.Icon.SUCCESS
+        case JobStatus.SKIPPED_DISABLED:
+            icon = icons.Icon.SKIPPED_DISABLED
+        case JobStatus.SKIPPED_UNAVAILABLE:
+            icon = icons.Icon.SKIPPED_UNAVAILABLE
+        case JobStatus.FALLBACK:
+            icon = icons.Icon.FALLBACK
+        case JobStatus.FAILURE_EXISTING:
+            icon = icons.Icon.FAILURE_EXISTING
+        case JobStatus.FAILURE:
+            icon = icons.Icon.FAILURE
+        case _ as unreachable:
+            assert_never(unreachable)
+    return icon
+
+
+def _tooltip_data(song: UsdbSong, column: int) -> str | None:
+    col = Column(column)
+    match col:
+        case Column.AUDIO:
+            if not (song.sync_meta and (audio := song.sync_meta.audio)):
+                return None
+            tooltip = status_tooltip(audio)
+        case Column.VIDEO:
+            if not (song.sync_meta and (video := song.sync_meta.video)):
+                return None
+            tooltip = status_tooltip(video)
+        case Column.COVER:
+            if not (song.sync_meta and (cover := song.sync_meta.cover)):
+                return None
+            tooltip = status_tooltip(cover)
+        case Column.BACKGROUND:
+            if not (song.sync_meta and (background := song.sync_meta.background)):
+                return None
+            tooltip = status_tooltip(background)
+        case _:
+            return None
+    return tooltip
+
+
+def status_tooltip(resource: Resource) -> str:
+    match resource.status:
+        case JobStatus.SUCCESS:
+            tooltip = "Resource download successful"
+        case JobStatus.SKIPPED_DISABLED:
+            tooltip = "Resource download disabled in the settings"
+        case JobStatus.SKIPPED_UNAVAILABLE:
+            tooltip = "No resource available"
+        case JobStatus.SUCCESS_UNCHANGED:
+            tooltip = "Resource is available (unchanged)"
+        case JobStatus.FALLBACK:
+            tooltip = "Fallback resource (from USDB / comments)"
+        case JobStatus.FAILURE_EXISTING:
+            tooltip = "Resource download failed, using existing resource"
+        case JobStatus.FAILURE:
+            tooltip = "Resource download failed"
+        case _ as unreachable:
+            assert_never(unreachable)
+    return tooltip
 
 
 @cache
@@ -223,11 +302,3 @@ def rating_str(rating: int) -> str:
 
 def yes_no_str(yes: bool) -> str:
     return "Yes" if yes else "No"
-
-
-# Creating a QIcon without a QApplication gives a runtime error, so we can't put it
-# in a global, but we also don't want to keep recreating it.
-# So we store them in these convenience functions.
-@cache
-def icon(resource: str, yes: bool = True) -> QIcon | None:
-    return QIcon(resource) if yes else None

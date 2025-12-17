@@ -5,29 +5,34 @@ import functools
 import itertools
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 import unicodedata
 from pathlib import Path
+from types import TracebackType
+from typing import ClassVar
 
 import requests
-from appdirs import AppDirs
+import send2trash
+from bs4 import BeautifulSoup, Tag
 from packaging import version
+from platformdirs import PlatformDirs
+from unidecode import unidecode
 
-from usdb_syncer import constants
+import usdb_syncer
+from usdb_syncer import constants, errors, settings
 from usdb_syncer.logger import logger
 
 CACHE_LIFETIME = 60 * 60
-_app_dirs = AppDirs("usdb_syncer", "bohning")
+_platform_dirs = PlatformDirs("usdb_syncer", "bohning")
 
 
-def is_bundle() -> bool:
-    """True if the app is running from a bundle.
-
-    https://pyinstaller.org/en/stable/runtime-information.html#run-time-information
-    """
-    return bool(getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", False))
+# https://pyinstaller.org/en/stable/runtime-information.html#run-time-information
+IS_BUNDLE = bool(getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", False))
+IS_INSTALLED = "site-packages" in __file__
+IS_SOURCE = not IS_BUNDLE and not IS_INSTALLED
 
 
 def _root() -> Path:
@@ -51,17 +56,66 @@ def video_url_from_resource(resource: str) -> str | None:
     return None
 
 
+def _parse_polsy_html(html: str) -> list[str] | None:
+    """Parses the HTML from polsy.org.uk and returns a list of allowed countries."""
+
+    soup = BeautifulSoup(html, "lxml")
+    allowed_countries = []
+
+    table = soup.find("table")
+    if not table or not isinstance(table, Tag):
+        return None
+
+    rows = table.find_all("tr")[1:]
+
+    for row in rows:
+        if not isinstance(row, Tag):
+            continue
+        cols = row.find_all("td")
+        if len(cols) < 2:
+            continue
+        if country_code := cols[0].text.split(" - ", 1)[0]:
+            allowed_countries.append(country_code)
+
+    return allowed_countries
+
+
+def get_allowed_countries(resource: str) -> list[str] | None:
+    """Fetches YouTube video availability information from polsy.org.uk."""
+
+    url = f"https://polsy.org.uk/stuff/ytrestrict.cgi?agreed=on&ytid={resource}"
+    response = requests.get(url, timeout=5)
+
+    if not response.ok:
+        return None
+
+    return _parse_polsy_html(response.text)
+
+
+def remove_ansi_codes(text: str) -> str:
+    """Removes ANSI escape codes from a string."""
+
+    ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+    return ansi_escape.sub("", text)
+
+
+def get_first_alphanum_upper(text: str) -> str | None:
+    """Returns the first uppercase alphanumeric character in a string."""
+    for char in text:
+        if char.isalnum():
+            return unidecode(char)[0].upper()
+    return None
+
+
 class AppPaths:
     """App data paths."""
 
-    log = Path(_app_dirs.user_data_dir, "usdb_syncer.log")
-    song_list = Path(_app_dirs.user_cache_dir, "available_songs.json")
-    root = _root()
-    fallback_song_list = Path(root, "data", "song_list.json")
-    profile = Path(root, "usdb_syncer.prof")
-    db = Path(_app_dirs.user_data_dir, "usdb_syncer.db")
-    sql = Path(root, "src", "usdb_syncer", "db", "sql")
-    addons = Path(_app_dirs.user_data_dir, "addons")
+    log = Path(_platform_dirs.user_data_dir, "usdb_syncer.log")
+    db = Path(_platform_dirs.user_data_dir, "usdb_syncer.db")
+    addons = Path(_platform_dirs.user_data_dir, "addons")
+    song_list = Path(_platform_dirs.user_cache_dir, "available_songs.json")
+    profile = Path(_platform_dirs.user_cache_dir, "usdb_syncer.prof")
+    shared = (_root() / "shared") if IS_SOURCE else None
 
     @classmethod
     def make_dirs(cls) -> None:
@@ -76,7 +130,7 @@ class DirectoryCache:
     are downloaded concurrently.
     """
 
-    _cache: dict[Path, float] = {}
+    _cache: ClassVar[dict[Path, float]] = {}
 
     @classmethod
     def insert(cls, path: Path) -> bool:
@@ -145,9 +199,9 @@ def read_file_head(
     """
     for enc in [encoding] if encoding else ["utf-8-sig", "cp1252"]:
         try:
-            with open(path, encoding=enc) as file:
+            with path.open(encoding=enc) as file:
                 # strip line break
-                return list(r[:-1] for r in itertools.islice(file, length))
+                return [r[:-1] for r in itertools.islice(file, length)]
         except UnicodeDecodeError:
             pass
     return None
@@ -176,7 +230,7 @@ def next_unique_directory(path: Path) -> Path:
 
 
 def is_name_maybe_with_suffix(text: str, name: str) -> bool:
-    """True if `text` is 'name' or 'name (n)' for the provided `name` and some number n."""
+    "True if `text` is 'name' or 'name (n)' for the provided `name` and some number n."
     if not text.startswith(name):
         return False
     tail = text.removeprefix(name)
@@ -194,12 +248,13 @@ def path_matches_maybe_with_suffix(path: Path, search: Path) -> bool:
     return is_name_maybe_with_suffix(path.name, search.name)
 
 
-def open_file_explorer(path: Path) -> None:
+def open_path_or_file(path: Path) -> None:
     logger.debug(f"Opening '{path}' with file explorer.")
     if sys.platform == "win32":
         os.startfile(path)
     elif sys.platform == "linux":
-        subprocess.run(["xdg-open", str(path)], check=True)
+        with LinuxEnvCleaner() as env:
+            subprocess.run(["xdg-open", str(path)], check=True, env=env)
     else:
         subprocess.run(["open", str(path)], check=True)
 
@@ -236,7 +291,7 @@ def resource_file_ending(name: str) -> str:
 
 def get_mtime(path: Path) -> int:
     """Helper for mtime in microseconds so it can be stored in db losslessly."""
-    return int(os.path.getmtime(path) * 1_000_000)
+    return int(path.stat().st_mtime * 1_000_000)
 
 
 @functools.cache
@@ -247,19 +302,26 @@ def format_timestamp(micros: int) -> str:
 
 
 def get_latest_version() -> str | None:
-    response = requests.get(constants.GITHUB_API_LATEST, timeout=5)
-    if response.status_code == 200:
-        return response.json()["tag_name"]
+    try:
+        response = requests.get(constants.GITHUB_API_LATEST, timeout=5)
+        response.raise_for_status()
+        return response.json().get("tag_name")
+    except requests.Timeout:
+        logger.warning(
+            "Failed to retrieve latest version from GitHub, API request timed out."
+        )
+    except requests.RequestException as e:
+        logger.warning(f"Failed to retrieve latest version from GitHub, API error: {e}")
     return None
 
 
 def newer_version_available() -> str | None:
     if latest_version := get_latest_version():
-        if version.parse(constants.VERSION) < version.parse(latest_version):
+        if version.parse(usdb_syncer.__version__) < version.parse(latest_version):
             logger.warning(
                 f"USDB Syncer {latest_version} is available! "
-                f"(You have {constants.VERSION}). Please download the latest release "
-                f"from {constants.GITHUB_DL_LATEST}."
+                f"(You have {usdb_syncer.__version__}). Please download the latest "
+                f"release from {constants.GITHUB_DL_LATEST}."
             )
             return latest_version
         logger.info(f"You are running the latest Syncer version {latest_version}.")
@@ -267,3 +329,147 @@ def newer_version_available() -> str | None:
 
     logger.info("Could not determine the latest version.")
     return None
+
+
+def start_process_detached(command: list[str]) -> subprocess.Popen:
+    """Start a process in a fully detached mode, cross-platform."""
+    # We are not using a context manager here so that the app is launched
+    # without blocking the syncer.
+    flags = 0
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    with LinuxEnvCleaner() as env:
+        return subprocess.Popen(command, creationflags=flags, close_fds=True, env=env)
+
+
+def get_media_duration(path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+    return float(result.stdout)
+
+
+def ffmpeg_is_available() -> bool:
+    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+        return True
+    if (path := settings.get_ffmpeg_dir()) and path not in os.environ["PATH"]:
+        # first run; restore path from settings
+        add_to_system_path(path)
+        if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+            return True
+    return False
+
+
+def deno_is_available() -> bool:
+    if shutil.which("deno"):
+        return True
+    if (path := settings.get_deno_dir()) and path not in os.environ["PATH"]:
+        # first run; restore path from settings
+        add_to_system_path(path)
+        if shutil.which("deno"):
+            return True
+    return False
+
+
+def open_external_app(app: settings.SupportedApps, path: Path) -> None:
+    logger.debug(f"Starting {app} with '{path}'.")
+    executable = settings.get_app_path(app)
+    if executable is None:
+        return
+    if executable.suffix == ".jar":
+        cmd = ["java", "-jar", str(executable), str(path)]
+    else:
+        cmd = [str(executable), app.songpath_parameter(), str(path)]
+    try:
+        start_process_detached(cmd)
+    except FileNotFoundError:
+        logger.error(
+            f"Failed to launch {app} from '{executable!s}', file not found. "
+            "Please check the executable path in the settings."
+        )
+    except OSError:
+        logger.exception(f"Failed to launch {app} from '{executable!s}', I/O error.")
+    except subprocess.SubprocessError:
+        logger.exception(
+            f"Failed to launch {app} from '{executable!s}', subprocess error."
+        )
+
+
+def trash_or_delete_path(path: Path) -> None:
+    if settings.get_trash_files():
+        try:
+            send2trash.send2trash(path)
+        except send2trash.TrashPermissionError as err:
+            raise errors.TrashError(path) from err
+    else:
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
+
+
+class LinuxEnvCleaner:
+    """Context manager to clean an environment. Specifically, it removes paths starting
+    with /tmp/_MEI and some specific Qt-related paths from the environment.
+
+    This is needed when running applications bundled with PyInstaller, as it links some
+    libraries that may interfere with dynamically loaded libraries.
+
+    This class is only useful on Linux systems, where it modifies the environment to
+    avoid conflicts.
+    On non-Linux platforms, it is a no-op and does not alter the environment.
+    """
+
+    def __init__(self) -> None:
+        self.env = os.environ.copy()
+        self.modified_env = self.env.copy()
+        self.old_values: dict[str, str] = {}
+
+    def __enter__(self) -> dict[str, str]:
+        if sys.platform == "linux":
+            for key, value in self.env.items():
+                if key == "LD_LIBRARY_PATH":
+                    new_value = ":".join(
+                        path
+                        for path in (value.split(":") if value else [])
+                        if not path.startswith("/tmp/_MEI")  # noqa: S108
+                    )
+                    self.old_values[key] = value
+                    self.modified_env[key] = new_value
+                if key in (
+                    "QT_PLUGIN_PATH",
+                    "QT_QPA_PLATFORM_PLUGIN_PATH",
+                    "QT_DEBUG_PLUGINS",
+                ):
+                    self.old_values[key] = value
+                    self.modified_env.pop(key)
+            os.environ.clear()
+            os.environ.update(self.modified_env)
+        return self.modified_env.copy()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if sys.platform == "linux":
+            current_env = os.environ.copy()
+
+            for key, value in current_env.items():
+                if key not in self.env:
+                    self.modified_env[key] = value
+            for key, value in self.old_values.items():
+                self.modified_env[key] = value
+
+            os.environ.clear()
+            os.environ.update(self.modified_env)

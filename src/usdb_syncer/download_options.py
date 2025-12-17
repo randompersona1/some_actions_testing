@@ -25,7 +25,7 @@ class AudioOptions:
 
     format: settings.AudioFormat
     bitrate: settings.AudioBitrate
-    normalize: bool
+    normalization: settings.AudioNormalization
     embed_artwork: bool
     rate_limit: settings.YtdlpRateLimit
 
@@ -60,7 +60,8 @@ class VideoOptions:
         height = f"[height<={self.max_resolution.height()}]"
         fps = f"[fps<={self.max_fps.value}]"
         # fps filter always fails for some platforms, so skip it as a fallback
-        return "/".join(f"{f}{width}{height}{fps}/{f}{width}{height}" for f in fmt)
+        # also some formats don't offer resolution information
+        return "/".join(f"{f}{width}{height}{fps}/{f}{width}{height}/{f}" for f in fmt)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class Options:
 
     song_dir: Path
     path_template: path_template.PathTemplate
+    notify_discord: bool
     txt_options: TxtOptions | None
     audio_options: AudioOptions | None
     browser: settings.Browser
@@ -97,7 +99,8 @@ class Options:
 def download_options() -> Options:
     return Options(
         song_dir=settings.get_song_dir(),
-        path_template=settings.get_path_template(),
+        path_template=path_template.PathTemplate.from_settings(),
+        notify_discord=settings.get_discord_allowed(),
         txt_options=_txt_options(),
         audio_options=_audio_options(),
         browser=settings.get_browser(),
@@ -127,7 +130,7 @@ def _audio_options() -> AudioOptions | None:
     return AudioOptions(
         format=settings.get_audio_format(),
         bitrate=settings.get_audio_bitrate(),
-        normalize=settings.get_audio_normalize(),
+        normalization=settings.get_audio_normalization(),
         embed_artwork=settings.get_audio_embed_artwork(),
         rate_limit=settings.get_ytdlp_rate_limit(),
     )

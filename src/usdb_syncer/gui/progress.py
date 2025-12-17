@@ -2,7 +2,8 @@
 
 import time
 import traceback
-from typing import Any, Callable, Generic, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeVar
 
 import attrs
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -50,8 +51,11 @@ class _ResultSignal(QtCore.QObject):
 class ProgressDialog(QtWidgets.QProgressDialog):
     """Progress dialog that cannot be closed by the user."""
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         event.ignore()
+
+    def reject(self) -> None:
+        pass
 
 
 def run_with_progress(
@@ -60,9 +64,7 @@ def run_with_progress(
     on_done: Callable[[Result[T]], Any] = lambda res: res.result(),
 ) -> None:
     """Runs a task on a background thread while a modal progress dialog is shown."""
-    dialog = ProgressDialog(
-        labelText=label, cancelButtonText="Abort", maximum=0, minimum=0
-    )
+    dialog = ProgressDialog(parent=None, labelText=label, minimum=0, maximum=0)
     dialog.setCancelButton(None)  # type: ignore
     dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
     dialog.setWindowTitle("USDB Syncer")
@@ -76,7 +78,7 @@ def run_with_progress(
         try:
             with db.managed_connection(utils.AppPaths.db):
                 result = Result(task())
-        except Exception as exc:  # pylint: disable=broad-exception-caught
+        except Exception as exc:  # noqa: BLE001
             result = Result(_Error(exc))
         signal.result.emit()
 

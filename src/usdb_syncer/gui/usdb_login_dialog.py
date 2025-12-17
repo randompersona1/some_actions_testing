@@ -1,10 +1,15 @@
 """Dialog to manage USDB login."""
 
-from PySide6.QtGui import QDesktopServices, QIcon
-from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
+from __future__ import annotations
 
-from usdb_syncer import settings
+from typing import ClassVar
+
+from PySide6 import QtWidgets
+from PySide6.QtGui import QDesktopServices
+
+from usdb_syncer import events, settings
 from usdb_syncer.constants import Usdb
+from usdb_syncer.gui import icons
 from usdb_syncer.gui.forms.UsdbLoginDialog import Ui_Dialog
 from usdb_syncer.usdb_scraper import (
     SessionManager,
@@ -15,10 +20,12 @@ from usdb_syncer.usdb_scraper import (
 )
 
 
-class UsdbLoginDialog(Ui_Dialog, QDialog):
+class UsdbLoginDialog(Ui_Dialog, QtWidgets.QDialog):
     """Dialog to manage USDB login."""
 
-    def __init__(self, parent: QWidget) -> None:
+    _instance: ClassVar[UsdbLoginDialog | None] = None
+
+    def __init__(self, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent=parent)
         self._parent = parent
         self.setupUi(self)
@@ -29,9 +36,20 @@ class UsdbLoginDialog(Ui_Dialog, QDialog):
         self.button_log_out.pressed.connect(self._on_log_out)
         self._load_settings()
 
+    @classmethod
+    def load(cls, parent: QtWidgets.QWidget) -> None:
+        if cls._instance:
+            cls._instance.raise_()
+        else:
+            cls._instance = cls(parent)
+            cls._instance.show()
+
     def _load_settings(self) -> None:
         for browser in settings.Browser:
-            self.combobox_browser.addItem(QIcon(browser.icon()), str(browser), browser)
+            if icon := icons.browser_icon(browser):
+                self.combobox_browser.addItem(icon, str(browser), browser)
+            else:
+                self.combobox_browser.addItem(str(browser), browser)
         self.combobox_browser.setCurrentIndex(
             self.combobox_browser.findData(settings.get_browser())
         )
@@ -45,12 +63,14 @@ class UsdbLoginDialog(Ui_Dialog, QDialog):
             self.line_edit_username.text(), self.line_edit_password.text()
         )
         SessionManager.reset_session()
+        SessionManager.session()
+        UsdbLoginDialog._instance = None
         super().accept()
 
     def _on_check_login(self) -> None:
         session = new_session_with_cookies(self.combobox_browser.currentData())
         if user := get_logged_in_usdb_user(session):
-            message = f"Success! Existing session found with user '{user}'."
+            message = f"Success! Existing session found with {user.role} '{user.name}'"
         elif (user := self.line_edit_username.text()) and (
             password := self.line_edit_password.text()
         ):
@@ -60,7 +80,12 @@ class UsdbLoginDialog(Ui_Dialog, QDialog):
                 message = "Login failed!"
         else:
             message = "No existing session found!"
-        QMessageBox.information(self._parent, "Login Result", message)
+        QtWidgets.QMessageBox.information(self._parent, "Login Result", message)
 
     def _on_log_out(self) -> None:
         log_out_of_usdb(new_session_with_cookies(self.combobox_browser.currentData()))
+        events.LoggedInToUSDB(user=None).post()
+
+    def reject(self) -> None:
+        UsdbLoginDialog._instance = None
+        super().reject()

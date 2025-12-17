@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import attrs
 
 from usdb_syncer import errors
-from usdb_syncer.logger import Log
+from usdb_syncer.logger import Logger
+from usdb_syncer.meta_tags import MetaTags
 from usdb_syncer.settings import FormatVersion
 from usdb_syncer.song_txt.auxiliaries import BeatsPerMinute, replace_false_apostrophes
 from usdb_syncer.song_txt.language_translations import LANGUAGE_TRANSLATIONS
@@ -52,18 +54,19 @@ class Headers:
     # not rewritten, as it depends on the chosen encoding
     encoding: str | None = None
     comment: str | None = None
+    providedby: str | None = None
     resolution: str | None = None
     tags: str | None = None
 
     @classmethod
-    def parse(cls, lines: list[str], logger: Log) -> Headers:
+    def parse(cls, lines: list[str], logger: Logger) -> Headers:
         """Consumes a stream of lines while they are headers."""
         kwargs: dict[str, Any] = {"unknown": {}}
         while lines:
             if not lines[0].startswith("#"):
                 break
             line = lines.pop(0).removeprefix("#")
-            if not ":" in line:
+            if ":" not in line:
                 logger.warning(f"header without value: '{line}'")
                 continue
             header, value = line.split(":", maxsplit=1)
@@ -75,9 +78,7 @@ class Headers:
             except ValueError:
                 logger.warning(f"invalid header value: '{line}'")
         if "title" not in kwargs or "artist" not in kwargs or "bpm" not in kwargs:
-            raise errors.NotesParseError(
-                "cannot parse song without artist, title or bpm"
-            )
+            raise errors.HeadersRequiredMissingError()
         return cls(**kwargs)
 
     def set_version(self, version: FormatVersion) -> None:
@@ -126,20 +127,47 @@ class Headers:
                 "p2",
                 "album",
                 "comment",
+                "providedby",
                 "tags",
             )
             if (val := getattr(self, key)) is not None
         )
         if self.unknown:
-            out = "\n".join(
-                (out, *(f"#{key.upper()}:{val}" for key, val in self.unknown.items()))
+            out = "\n".join((
+                out,
+                *(f"#{key.upper()}:{val}" for key, val in self.unknown.items()),
+            ))
+        return out
+
+    def str_for_usdb(self) -> str:
+        out = "\n".join(
+            f"#{key.upper()}:{val}"
+            for key in (
+                "artist",
+                "title",
+                "mp3",
+                "creator",
+                "edition",
+                "cover",
+                "background",
+                "genre",
+                "year",
+                "language",
+                "bpm",
+                "gap",
+                "video",
+                "videogap",
+                "start",
+                "end",
             )
+            if (val := getattr(self, key)) is not None
+        )
         return out
 
     def artist_title_str(self) -> str:
         return f"{self.artist} - {self.title}"
 
-    def fix_apostrophes(self, logger: Log) -> None:
+    def fix_apostrophes(self, logger: Logger) -> None:
         apostrophes_and_quotation_marks_fixed = False
         for key in ("artist", "title", "language", "genre", "p1", "p2", "album"):
             if value := getattr(self, key):
@@ -156,7 +184,7 @@ class Headers:
         if self.medleyendbeat:
             self.medleyendbeat = func(self.medleyendbeat)
 
-    def fix_language(self, logger: Log) -> None:
+    def fix_language(self, logger: Logger) -> None:
         if not self.language:
             logger.debug("No #LANGUAGE tag found. Consider adding it.")
         if old_language := self.language:
@@ -179,6 +207,34 @@ class Headers:
         if self.language:
             return self.language.split(",", maxsplit=1)[0].removesuffix(" (romanized)")
         return ""
+
+    def fix_videogap(self, meta_tags: MetaTags, logger: Logger) -> None:
+        if self.videogap is None:
+            return
+
+        if meta_tags.audio and meta_tags.video is None:
+            logger.info(
+                "This song is audio only, thus the #VIDEOGAP is without effect. "
+                "Deleting #VIDEOGAP from local file."
+            )
+            self.videogap = None
+        elif meta_tags.audio is None and meta_tags.video:
+            logger.info(
+                "This song (implicitly) uses audio and video from the same source, "
+                "which are, generally, already in sync. Therefore, the #VIDEOGAP "
+                "actually causes audio and video to be asynchronized. "
+                "To fix this, the #VIDEOGAP is deleted from the local file. "
+                "If the actual intention of the #VIDEOGAP is to sync audio and video "
+                "from the *same* source, both 'a=' and 'v=' metatags need to be "
+                "explicitly present and need to point to the same source. "
+            )
+            self.videogap = None
+        elif meta_tags.audio and meta_tags.video and meta_tags.audio == meta_tags.video:
+            logger.info(
+                "This song (explicitly) uses audio and video from the same source. It "
+                "is assumed that the #VIDEOGAP is intentional to actually fix the "
+                "misalignment of audio and video in that source."
+            )
 
 
 def _set_header_value(kwargs: dict[str, Any], header: str, value: str) -> None:
@@ -208,6 +264,7 @@ def _set_header_value(kwargs: dict[str, Any], header: str, value: str) -> None:
         "p2",
         "encoding",
         "comment",
+        "providedby",
         "resolution",
         "tags",
     ):

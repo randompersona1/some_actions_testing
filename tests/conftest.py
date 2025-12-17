@@ -4,12 +4,40 @@ import datetime
 from pathlib import Path
 
 import pytest
+from _pytest.config import Config
+from _pytest.config.argparsing import Parser
+from _pytest.nodes import Item
 
 from usdb_syncer import SongId, SyncMetaId
+from usdb_syncer.db import JobStatus
 from usdb_syncer.meta_tags import ImageMetaTags, MetaTags
-from usdb_syncer.sync_meta import ResourceFile, SyncMeta
+from usdb_syncer.sync_meta import Resource, ResourceFile, SyncMeta
 from usdb_syncer.usdb_scraper import SongDetails
 from usdb_syncer.usdb_song import UsdbSong
+
+
+# taken from https://docs.pytest.org/en/latest/example/simple.html#control-skipping-of-tests-according-to-command-line-option
+def pytest_addoption(parser: Parser) -> None:
+    parser.addoption(
+        "--runslow", action="store_true", default=False, help="run slow tests"
+    )
+
+
+def pytest_configure(config: Config) -> None:
+    config.addinivalue_line("markers", "slow: mark test as slow to run")
+
+
+def pytest_collection_modifyitems(config: Config, items: list[Item]) -> None:
+    if config.getoption("--runslow"):
+        # --runslow given in cli: do not skip slow tests
+        return
+    skip_slow = pytest.mark.skip(reason="need --runslow option to run")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
+
+
+#
 
 
 @pytest.fixture(scope="session", name="resource_dir")
@@ -33,6 +61,7 @@ def example_usdb_song() -> UsdbSong:
     return UsdbSong(
         sample_url="",
         song_id=song_id,
+        usdb_mtime=0,
         artist="Foo",
         title="Bar",
         genre="Pop",
@@ -46,10 +75,14 @@ def example_usdb_song() -> UsdbSong:
         sync_meta=SyncMeta(
             sync_meta_id=sync_meta_id,
             song_id=song_id,
+            usdb_mtime=0,
             path=Path(f"C:/{sync_meta_id.to_filename()}"),
             mtime=0,
             meta_tags=MetaTags(),
-            audio=ResourceFile("song.mp3", 1, "example.org/song.mp3"),
+            audio=Resource(
+                status=JobStatus.SUCCESS,
+                file=ResourceFile("song.mp3", 1, "example.org/song.mp3"),
+            ),
         ),
     )
 
@@ -62,12 +95,12 @@ def example_meta_tags() -> MetaTags:
     )
 
 
-def example_notes_str(meta_tags: MetaTags = MetaTags()) -> str:
+def example_notes_str(meta_tags: MetaTags | None = None) -> str:
     return f"""#TITLE:title
 #ARTIST:artist
 #BPM:250
 #GAP:12345
-#VIDEO:{str(meta_tags)}
+#VIDEO:{meta_tags or MetaTags()!s}
 : 0 1 0 first note 
 * 2 1 0 golden 
 F 4 1 0 freestyle 
@@ -80,7 +113,7 @@ G 8 1 0 golden freestyle
 : 18 1 0 and 
 : 20 1 0 another
 E
-"""
+"""  # noqa: W291
 
 
 def details_from_song(song: UsdbSong) -> SongDetails:
@@ -102,6 +135,6 @@ def details_from_song(song: UsdbSong) -> SongDetails:
         date_time=datetime.datetime(2024, 7, 20),
         uploader="unknown",
         editors=[],
-        votes=int(100),
+        votes=100,
         audio_sample=None,
     )

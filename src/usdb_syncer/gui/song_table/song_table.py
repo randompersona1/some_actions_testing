@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable, Iterable, Iterator
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Any
 
-import send2trash
-from PySide6 import QtCore, QtGui, QtMultimedia, QtWidgets
+from PySide6 import QtCore, QtMultimedia, QtWidgets
 from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtGui import QAction, QCursor
 
-from usdb_syncer import SongId, db, events, media_player, settings, sync_meta
-from usdb_syncer.gui import ffmpeg_dialog
+from usdb_syncer import SongId, db, events, media_player, settings, sync_meta, utils
+from usdb_syncer.custom_data import CustomData
+from usdb_syncer.gui import events as gui_events
+from usdb_syncer.gui import external_deps_dialog, previewer
 from usdb_syncer.gui.custom_data_dialog import CustomDataDialog
 from usdb_syncer.gui.progress import run_with_progress
-from usdb_syncer.gui.song_table.column import Column
+from usdb_syncer.gui.song_table.column import MINIMUM_COLUMN_WIDTH, Column
 from usdb_syncer.gui.song_table.table_model import TableModel
 from usdb_syncer.logger import song_logger
 from usdb_syncer.song_loader import DownloadManager
@@ -30,8 +34,8 @@ class SongTable:
     """Controller for the song table."""
 
     _search = db.SearchBuilder()
-    _playing_song: UsdbSong | None = None
-    _next_playing_song: UsdbSong | None = None
+    _playing_song_id: SongId | None = None
+    _next_playing_song_id: SongId | None = None
 
     def __init__(self, mw: MainWindow) -> None:
         self.mw = mw
@@ -45,41 +49,54 @@ class SongTable:
         mw.table_view.selectionModel().currentChanged.connect(
             self._on_current_song_changed
         )
+        self._setup_row_count_change()
+        self._set_app_actions_visible()
+        events.PreferencesChanged.subscribe(lambda _: self._set_app_actions_visible())
         events.SongChanged.subscribe(self._on_song_changed)
         self._setup_search_timer()
-        events.TreeFilterChanged.subscribe(self._on_tree_filter_changed)
-        events.TextFilterChanged.subscribe(self._on_text_filter_changed)
-        events.SavedSearchRestored.subscribe(self._on_saved_search_restored)
-        QtGui.QShortcut(Qt.Key.Key_Space, self._view).activated.connect(self._on_space)
+        gui_events.TreeFilterChanged.subscribe(self._on_tree_filter_changed)
+        gui_events.TextFilterChanged.subscribe(self._on_text_filter_changed)
+        gui_events.SavedSearchRestored.subscribe(self._on_saved_search_restored)
 
     def _on_playback_state_changed(
         self, state: QtMultimedia.QMediaPlayer.PlaybackState
     ) -> None:
-        if state == QtMultimedia.QMediaPlayer.PlaybackState.PlayingState:
-            assert self._next_playing_song
-            self._playing_song = song = self._next_playing_song
-            self._next_playing_song = None
-            song.is_playing = True
+        play = state == QtMultimedia.QMediaPlayer.PlaybackState.PlayingState
+        if play:
+            assert self._next_playing_song_id is not None
+            if not (song := UsdbSong.get(self._next_playing_song_id)):
+                return
+            self._playing_song_id = self._next_playing_song_id
+            self._next_playing_song_id = None
         else:
-            assert self._playing_song
-            song = self._playing_song
-            self._playing_song = None
-            song.is_playing = False
+            assert self._playing_song_id is not None
+            if not (song := UsdbSong.get(self._playing_song_id)):
+                self._playing_song_id = None
+                return
+            self._playing_song_id = None
         with db.transaction():
-            song.upsert()
+            song.set_playing(play)
         events.SongChanged(song.song_id).post()
 
     def _on_playback_error_changed(self) -> None:
-        if not self._media_player.error().value or self._next_playing_song is None:
+        if not self._media_player.error().value or self._next_playing_song_id is None:
             return
-        logger = song_logger(self._next_playing_song.song_id)
+        logger = song_logger(self._next_playing_song_id)
         source = self._media_player.source().url()
         logger.error(f"Failed to play back source: {source}")
         logger.debug(self._media_player.errorString())
 
-    def _on_space(self) -> None:
+    def on_play_or_stop_sample(self) -> None:
         if song := self.current_song():
             self._play_or_stop_sample(song)
+
+    def stop_playing_local_song(self, song: UsdbSong) -> None:
+        if (
+            song.song_id == self._playing_song_id
+            and song.sync_meta
+            and song.sync_meta.audio
+        ):
+            self._media_player.stop()
 
     def _header(self) -> QtWidgets.QHeaderView:
         return self._view.horizontalHeader()
@@ -97,7 +114,7 @@ class SongTable:
         self._download(self._selected_rows())
 
     def _download(self, rows: Iterable[int]) -> None:
-        ffmpeg_dialog.check_ffmpeg(
+        external_deps_dialog.check_external_deps(
             self.mw,
             lambda: run_with_progress(
                 "Initializing downloads ...", partial(self._download_inner, rows)
@@ -113,9 +130,10 @@ class SongTable:
                 song_logger(song.song_id).info("Not downloading song as it is pinned.")
                 continue
             if song.status.can_be_downloaded():
-                song.status = DownloadStatus.PENDING
+                self.stop_playing_local_song(song)
+                previewer.Previewer.close_song(song.song_id)
                 with db.transaction():
-                    song.upsert()
+                    song.set_status(DownloadStatus.PENDING)
                 events.SongChanged(song.song_id).post()
                 to_download.append(song)
         if to_download:
@@ -131,7 +149,7 @@ class SongTable:
         self._view.setModel(self._model)
         self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._view.customContextMenuRequested.connect(
-            lambda: self.mw.menu_songs.exec(QtGui.QCursor.pos())
+            lambda: self.mw.menu_songs.exec(QCursor.pos())
         )
         self._view.doubleClicked.connect(lambda idx: self._download([idx.row()]))
         self._view.clicked.connect(self._on_click)
@@ -145,50 +163,48 @@ class SongTable:
                 existing_state = True
                 self._search.order = Column(header.sortIndicatorSection()).song_order()
                 self._search.descending = bool(header.sortIndicatorOrder().value)
+
+        header.setSectionsMovable(True)
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(MINIMUM_COLUMN_WIDTH)
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
+        header.setHighlightSections(False)
+
         for column in Column:
             if size := column.fixed_size():
-                header.setSectionResizeMode(
-                    column, QtWidgets.QHeaderView.ResizeMode.Fixed
-                )
                 header.resizeSection(column, size)
-            # setting a (default) width on the last, stretching column seems to cause
-            # issues, so we set it manually on the other columns
-            elif column is not max(Column):
-                if not existing_state:
-                    header.resizeSection(column, DEFAULT_COLUMN_WIDTH)
-                header.setSectionResizeMode(
-                    column, QtWidgets.QHeaderView.ResizeMode.Interactive
-                )
+            elif not existing_state:
+                header.resizeSection(column, DEFAULT_COLUMN_WIDTH)
 
     def build_custom_data_menu(self) -> None:
         if not (song := self.current_song()) or not song.sync_meta:
             return
-
-        def update(key: str, value: str | None) -> None:
-            if not song.sync_meta:
-                return
-            song.sync_meta.custom_data.set(key, value)
-            with db.transaction():
-                song.upsert()
-            events.SongChanged(song.song_id).post()
+        if not (selected := [s for s in self.selected_songs() if s.sync_meta]):
+            return
 
         def run_custom_data_dialog(key: str | None = None) -> None:
-            CustomDataDialog(self.mw, update, key).open()
+            CustomDataDialog(
+                self.mw, partial(_update_custom_data, selected), key
+            ).open()
 
         self.mw.menu_custom_data.clear()
         _add_action("New ...", self.mw.menu_custom_data, run_custom_data_dialog)
         self.mw.menu_custom_data.addSeparator()
-        for key, value in song.sync_meta.custom_data.items():
+        for key in sorted(CustomData.key_options()):
+            value = song.sync_meta.custom_data.get(key)
             key_menu = QtWidgets.QMenu(key, self.mw.menu_custom_data)
+            if value is not None:
+                key_menu.menuAction().setCheckable(True)
+                key_menu.menuAction().setChecked(True)
             self.mw.menu_custom_data.addMenu(key_menu)
             _add_action("New ...", key_menu, partial(run_custom_data_dialog, key))
             key_menu.addSeparator()
-            _add_action(value, key_menu, partial(update, key, None), checked=True)
-            for option in sync_meta.CustomData.value_options(key):
-                if option != value:
-                    _add_action(
-                        option, key_menu, partial(update, key, option), checked=False
-                    )
+            for option in sorted(sync_meta.CustomData.value_options(key)):
+                checked = option == value
+                slot = partial(
+                    _update_custom_data, selected, key, None if checked else option
+                )
+                _add_action(option, key_menu, slot, checked=checked)
 
     def _on_click(self, index: QtCore.QModelIndex) -> None:
         if index.column() == Column.SAMPLE_URL.value and (
@@ -197,13 +213,12 @@ class SongTable:
             self._play_or_stop_sample(song)
 
     def _play_or_stop_sample(self, song: UsdbSong) -> None:
-        if self._playing_song and song.song_id == self._playing_song.song_id:
+        if self._playing_song_id == song.song_id:
             # second play() in a row is a stop()
             self._media_player.stop()
             return
         position = 0
-        if song.sync_meta and song.sync_meta.audio:
-            path = song.sync_meta.path.parent / song.sync_meta.audio.fname
+        if (sync_meta := song.sync_meta) and (path := sync_meta.audio_path()):
             url = path.absolute().as_posix()
             if song.sync_meta.meta_tags.preview:
                 position = int(song.sync_meta.meta_tags.preview * 1000)
@@ -211,7 +226,7 @@ class SongTable:
             url = song.sample_url
         else:
             return
-        self._next_playing_song = song
+        self._next_playing_song_id = song.song_id
         self._media_player.setSource(url)
         self._media_player.setPosition(position)
         self._media_player.play()
@@ -221,67 +236,61 @@ class SongTable:
             self.mw.table_view.horizontalHeader().saveState()
         )
 
-    ### actions
+    # actions
 
     def _on_song_changed(self, event: events.SongChanged) -> None:
         if event.song_id == self.current_song_id():
             self._on_current_song_changed()
 
     def _on_current_song_changed(self) -> None:
-        song = self.current_song()
-        for action in self.mw.menu_songs.actions():
-            action.setEnabled(bool(song))
-        if not song:
-            return
-        for action in (
-            self.mw.action_open_song_folder,
-            self.mw.menu_open_song_in,
-            self.mw.action_open_song_in_karedi,
-            self.mw.action_open_song_in_performous,
-            self.mw.action_open_song_in_ultrastar_manager,
-            self.mw.action_open_song_in_usdx,
-            self.mw.action_open_song_in_vocaluxe,
-            self.mw.action_open_song_in_yass_reloaded,
-            self.mw.action_delete,
-            self.mw.action_pin,
-            self.mw.menu_custom_data,
+        gui_events.CurrentSongChanged(self.current_song()).post()
+
+    def _set_app_actions_visible(self) -> None:
+        for action, app in (
+            (self.mw.action_open_song_in_karedi, settings.SupportedApps.KAREDI),
+            (self.mw.action_open_song_in_performous, settings.SupportedApps.PERFORMOUS),
+            (
+                self.mw.action_open_song_in_tune_perfect,
+                settings.SupportedApps.TUNE_PERFECT,
+            ),
+            (
+                self.mw.action_open_song_in_ultrastar_manager,
+                settings.SupportedApps.ULTRASTAR_MANAGER,
+            ),
+            (self.mw.action_open_song_in_usdx, settings.SupportedApps.USDX),
+            (self.mw.action_open_song_in_vocaluxe, settings.SupportedApps.VOCALUXE),
+            (
+                self.mw.action_open_song_in_yass_reloaded,
+                settings.SupportedApps.YASS_RELOADED,
+            ),
         ):
-            action.setEnabled(song.is_local())
-        self.mw.action_open_song_in_karedi.setVisible(
-            settings.get_app_path(settings.SupportedApps.KAREDI) is not None
-        )
-        self.mw.action_open_song_in_performous.setVisible(
-            settings.get_app_path(settings.SupportedApps.PERFORMOUS) is not None
-        )
-        self.mw.action_open_song_in_ultrastar_manager.setVisible(
-            settings.get_app_path(settings.SupportedApps.ULTRASTAR_MANAGER) is not None
-        )
-        self.mw.action_open_song_in_usdx.setVisible(
-            settings.get_app_path(settings.SupportedApps.USDX) is not None
-        )
-        self.mw.action_open_song_in_vocaluxe.setVisible(
-            settings.get_app_path(settings.SupportedApps.VOCALUXE) is not None
-        )
-        self.mw.action_open_song_in_yass_reloaded.setVisible(
-            settings.get_app_path(settings.SupportedApps.YASS_RELOADED) is not None
-        )
-        self.mw.action_pin.setChecked(song.is_pinned())
-        self.mw.action_songs_abort.setEnabled(song.status.can_be_aborted())
+            action.setVisible(settings.get_app_path(app) is not None)
 
     def delete_selected_songs(self) -> None:
-        with db.transaction():
-            for song in self.selected_songs():
-                if not song.sync_meta:
+        for song in self.selected_songs():
+            if not song.sync_meta:
+                continue
+            logger = song_logger(song.song_id)
+            if song.is_pinned():
+                logger.info("Not trashing song folder as it is pinned.")
+                continue
+            self.stop_playing_local_song(song)
+            previewer.Previewer.close_song(song.song_id)
+            retries = 5
+            while song.sync_meta.path.exists():
+                try:
+                    utils.trash_or_delete_path(song.sync_meta.path.parent)
+                except (OSError, FileNotFoundError):
+                    retries -= 1
+                    if retries <= 0:
+                        raise
+                    time.sleep(0.1)
                     continue
-                logger = song_logger(song.song_id)
-                if song.is_pinned():
-                    logger.info("Not trashing song folder as it is pinned.")
-                    continue
-                if song.sync_meta.path.exists():
-                    send2trash.send2trash(song.sync_meta.path.parent)
+                break
+            with db.transaction():
                 song.remove_sync_meta()
-                events.SongChanged(song.song_id)
-                logger.debug("Trashed song folder.")
+            events.SongChanged(song.song_id)
+            logger.debug("Trashed song folder.")
 
     def set_pin_selected_songs(self, pin: bool) -> None:
         for song in self.selected_songs():
@@ -293,7 +302,7 @@ class SongTable:
                 song.sync_meta.upsert()
             events.SongChanged(song.song_id)
 
-    ### selection model
+    # selection model
 
     def current_song_id(self) -> SongId | None:
         if (idx := self._view.selectionModel().currentIndex()).isValid():
@@ -329,20 +338,21 @@ class SongTable:
             | QItemSelectionModel.SelectionFlag.ClearAndSelect,
         )
 
-    ### sorting and filtering
+    # sorting and filtering
 
-    def connect_row_count_changed(self, func: Callable[[int, int], None]) -> None:
-        """Calls `func` with the new table row and selection counts."""
+    def _on_row_counts_changed(self, *_: Any) -> None:
+        gui_events.RowCountChanged(
+            rows=self._model.rowCount(),
+            selected=len(self._view.selectionModel().selectedRows()),
+        ).post()
 
-        def wrapped(*_: Any) -> None:
-            func(
-                self._model.rowCount(), len(self._view.selectionModel().selectedRows())
-            )
-
-        self._model.modelReset.connect(wrapped)
-        self._model.rowsInserted.connect(wrapped)
-        self._model.rowsRemoved.connect(wrapped)
-        self._view.selectionModel().selectionChanged.connect(wrapped)
+    def _setup_row_count_change(self) -> None:
+        self._model.modelReset.connect(self._on_row_counts_changed)
+        self._model.rowsInserted.connect(self._on_row_counts_changed)
+        self._model.rowsRemoved.connect(self._on_row_counts_changed)
+        self._view.selectionModel().selectionChanged.connect(
+            self._on_row_counts_changed
+        )
 
     def _setup_search_timer(self) -> None:
         self._search_timer = QtCore.QTimer(self.mw)
@@ -358,14 +368,14 @@ class SongTable:
             self._model.set_songs(db.search_usdb_songs(self._search))
             self._on_current_song_changed()
 
-    def _on_tree_filter_changed(self, event: events.TreeFilterChanged) -> None:
+    def _on_tree_filter_changed(self, event: gui_events.TreeFilterChanged) -> None:
         event.search.order = self._search.order
         event.search.descending = self._search.descending
         event.search.text = self._search.text
         self._search = event.search
         self.search_songs(100)
 
-    def _on_saved_search_restored(self, event: events.SavedSearchRestored) -> None:
+    def _on_saved_search_restored(self, event: gui_events.SavedSearchRestored) -> None:
         self._search.order = event.search.order
         self._search.descending = event.search.descending
         self._search.text = event.search.text
@@ -379,14 +389,16 @@ class SongTable:
         )
         self.search_songs(100)
 
-    def _on_text_filter_changed(self, event: events.TextFilterChanged) -> None:
+    def _on_text_filter_changed(self, event: gui_events.TextFilterChanged) -> None:
         self._search.text = event.search
         self.search_songs(400)
 
     def _on_sort_order_changed(self, section: int, order: Qt.SortOrder) -> None:
         self._search.order = Column(section).song_order()
         self._search.descending = bool(order.value)
-        events.SearchOrderChanged(self._search.order, self._search.descending).post()
+        gui_events.SearchOrderChanged(
+            self._search.order, self._search.descending
+        ).post()
         self.search_songs()
 
 
@@ -396,9 +408,19 @@ def _add_action(
     slot: Callable[[], None],
     checked: bool | None = None,
 ) -> None:
-    action = QtGui.QAction(name, menu)
+    action = QAction(name, menu)
     if checked is not None:
         action.setCheckable(True)
         action.setChecked(checked)
     action.triggered.connect(slot)
     menu.addAction(action)
+
+
+def _update_custom_data(songs: list[UsdbSong], key: str, value: str | None) -> None:
+    for song in songs:
+        if song.sync_meta:
+            song.sync_meta.custom_data.set(key, value)
+    with db.transaction():
+        UsdbSong.upsert_many(songs)
+    for song in songs:
+        events.SongChanged(song.song_id).post()

@@ -7,6 +7,8 @@ import binascii
 import random
 from pathlib import Path
 
+from usdb_syncer import errors
+from usdb_syncer._version import __version__ as __version__
 from usdb_syncer.constants import Usdb
 
 
@@ -18,7 +20,7 @@ class SongId(int):
 
     def __init__(self, value: int) -> None:
         if value not in range(100_000):
-            raise ValueError("SongId out of range")
+            raise errors.SongIdError(value)
 
     def __str__(self) -> str:
         return f"{self:05}"
@@ -34,8 +36,11 @@ class SongId(int):
         except ValueError:
             return None
 
-    def usdb_url(self) -> str:
-        return f"{Usdb.BASE_URL}?link=gettxt&id={self:d}"
+    def usdb_gettxt_url(self) -> str:
+        return f"{Usdb.GETTXT_URL}{self:d}"
+
+    def usdb_detail_url(self) -> str:
+        return f"{Usdb.DETAIL_URL}{self:d}"
 
 
 class SyncMetaId(int):
@@ -47,7 +52,7 @@ class SyncMetaId(int):
 
     @classmethod
     def new(cls) -> SyncMetaId:
-        return cls(random.randint(-(2**63), 2**63 - 1))
+        return cls(random.randint(-(2**63), 2**63 - 1))  # noqa: S311
 
     def encode(self) -> str:
         value = base64.urlsafe_b64encode(

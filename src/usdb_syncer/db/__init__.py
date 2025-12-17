@@ -5,35 +5,53 @@ from __future__ import annotations
 import contextlib
 import enum
 import json
-import os
 import sqlite3
 import threading
 import time
-import traceback
 from collections import defaultdict
+from collections.abc import Generator, Iterable, Iterator
+from enum import StrEnum, auto
+from importlib import resources
 from pathlib import Path
-from typing import Any, Generator, Iterable, Iterator, assert_never, cast
+from typing import Any, ClassVar, assert_never, cast
 
 import attrs
 from more_itertools import batched
 
 from usdb_syncer import SongId, SyncMetaId, errors
 from usdb_syncer.logger import logger
-from usdb_syncer.utils import AppPaths
 
-SCHEMA_VERSION = 5
+from . import sql
+
+SCHEMA_VERSION = 8
 
 # https://www.sqlite.org/limits.html
 _SQL_VARIABLES_LIMIT = 32766
 
+# 1000 is the maximum expression tree depth. Since
+# an sqlite update could change this without us
+# noticing quickly, we're leaving some space.
+# Performance impact is negligible.
+_SQL_SMALLER_THAN_EXPRESSION_TREE = 980
+
+_STATUS_COLUMN = """coalesce(
+    session_usdb_song.status,
+    CASE
+        sync_meta.usdb_mtime = usdb_song.usdb_mtime
+        WHEN true THEN 1
+        WHEN false THEN 2
+        ELSE 0
+    END
+)"""
+
 
 class _SqlCache:
-    _cache: dict[str, str] = {}
+    _cache: ClassVar[dict[str, str]] = {}
 
     @classmethod
     def get(cls, name: str, cache: bool = True) -> str:
         if (stmt := cls._cache.get(name)) is None:
-            stmt = AppPaths.sql.joinpath(name).read_text("utf8")
+            stmt = resources.files(sql).joinpath(name).read_text("utf8")
             if cache:
                 cls._cache[name] = stmt
         return stmt
@@ -49,24 +67,26 @@ class _DbState:
     """Singleton for managing the global database connection."""
 
     _local: _LocalConnection = _LocalConnection()
+    in_transaction: bool = False
+    trace_sql: bool = False
 
     @classmethod
-    def connect(cls, db_path: Path | str, trace: bool = False) -> None:
+    def connect(cls, db_path: Path | str) -> None:
         if cls._local.connection:
-            raise errors.DatabaseError("Already connected to database!")
+            raise errors.AlreadyConnectedError()
         cls._local.connection = sqlite3.connect(
-            db_path, check_same_thread=False, isolation_level=None, timeout=20
+            db_path, check_same_thread=False, isolation_level=None, timeout=60
         )
         thread = threading.current_thread().name
         logger.debug(f"Connected to database at '{db_path}' on thread {thread}.")
-        if trace:
+        if cls.trace_sql:
             cls._local.connection.set_trace_callback(logger.debug)
         _validate_schema(cls._local.connection)
 
     @classmethod
     def connection(cls) -> sqlite3.Connection:
         if cls._local.connection is None:
-            raise errors.DatabaseError("Not connected to database!")
+            raise errors.NotConnectedError()
         return cls._local.connection
 
     @classmethod
@@ -82,16 +102,19 @@ class _DbState:
 def transaction() -> Generator[None, None, None]:
     try:
         _DbState.connection().execute("BEGIN IMMEDIATE")
+        _DbState.in_transaction = True
         yield None
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
         _DbState.connection().rollback()
+        _DbState.in_transaction = False
         raise
     _DbState.connection().commit()
+    _DbState.in_transaction = False
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
     meta_table = connection.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta'"
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
     ).fetchone()
     if meta_table is None:
         version = 0
@@ -113,7 +136,7 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
 
 
 def connect(db_path: Path | str) -> None:
-    _DbState.connect(db_path, trace=bool(os.environ.get("TRACESQL")))
+    _DbState.connect(db_path)
 
 
 def close() -> None:
@@ -129,10 +152,30 @@ def managed_connection(db_path: Path | str) -> Generator[None, None, None]:
         _DbState.close()
 
 
+def set_trace_sql(trace_sql: bool) -> None:
+    """Set SQL logging for future connections."""
+    _DbState.trace_sql = trace_sql
+
+
+class JobStatus(StrEnum):
+    """Status of a download job."""
+
+    SKIPPED_DISABLED = auto()
+    SKIPPED_UNAVAILABLE = auto()
+    FAILURE = auto()
+    FAILURE_EXISTING = auto()
+    FALLBACK = auto()
+    SUCCESS_UNCHANGED = auto()
+    SUCCESS = auto()
+
+
 class DownloadStatus(enum.IntEnum):
     """Status of song in download queue."""
 
+    # integers must agree with select_usdb_song.sql
     NONE = 0
+    SYNCHRONIZED = enum.auto()
+    OUTDATED = enum.auto()
     PENDING = enum.auto()
     DOWNLOADING = enum.auto()
     FAILED = enum.auto()
@@ -141,6 +184,10 @@ class DownloadStatus(enum.IntEnum):
         match self:
             case DownloadStatus.NONE:
                 return ""
+            case DownloadStatus.SYNCHRONIZED:
+                return "Synchronized"
+            case DownloadStatus.OUTDATED:
+                return "Outdated"
             case DownloadStatus.PENDING:
                 return "Pending"
             case DownloadStatus.DOWNLOADING:
@@ -151,10 +198,27 @@ class DownloadStatus(enum.IntEnum):
                 assert_never(unreachable)
 
     def can_be_downloaded(self) -> bool:
-        return self in (DownloadStatus.NONE, DownloadStatus.FAILED)
+        return self not in (DownloadStatus.PENDING, DownloadStatus.DOWNLOADING)
 
     def can_be_aborted(self) -> bool:
         return self in (DownloadStatus.PENDING, DownloadStatus.DOWNLOADING)
+
+    def for_db(self) -> DownloadStatus | None:
+        match self:
+            case (
+                DownloadStatus.NONE
+                | DownloadStatus.SYNCHRONIZED
+                | DownloadStatus.OUTDATED
+            ):
+                return None
+            case (
+                DownloadStatus.PENDING
+                | DownloadStatus.DOWNLOADING
+                | DownloadStatus.FAILED
+            ):
+                return self
+            case _ as unreachable:
+                assert_never(unreachable)
 
 
 class SongOrder(enum.Enum):
@@ -182,7 +246,7 @@ class SongOrder(enum.Enum):
     BACKGROUND = enum.auto()
     STATUS = enum.auto()
 
-    def sql(self) -> str | None:
+    def sql(self) -> str | None:  # noqa: C901
         match self:
             case SongOrder.NONE:
                 return None
@@ -219,21 +283,42 @@ class SongOrder(enum.Enum):
             case SongOrder.PINNED:
                 return "sync_meta.pinned"
             case SongOrder.TXT:
-                return "txt.sync_meta_id IS NULL"
+                return self.order("txt")
             case SongOrder.AUDIO:
-                return "audio.sync_meta_id IS NULL"
+                return self.order("audio")
             case SongOrder.VIDEO:
-                return "video.sync_meta_id IS NULL"
+                return self.order("video")
             case SongOrder.COVER:
-                return "cover.sync_meta_id IS NULL"
+                return self.order("cover")
             case SongOrder.BACKGROUND:
-                return "background.sync_meta_id IS NULL"
+                return self.order("background")
             case SongOrder.STATUS:
-                return (
-                    "coalesce(session_usdb_song.status, sync_meta.mtime,"
-                    # max integer in SQLite
-                    " 9223372036854775807)"
-                )
+                return _STATUS_COLUMN
+
+    def order(self, alias: str) -> str:
+        """Return CASE SQL expression for resource_file status sorting."""
+        statuses = [
+            JobStatus.SKIPPED_DISABLED,
+            JobStatus.SKIPPED_UNAVAILABLE,
+            JobStatus.FAILURE,
+            JobStatus.FAILURE_EXISTING,
+            JobStatus.FALLBACK,
+            JobStatus.SUCCESS_UNCHANGED,
+            JobStatus.SUCCESS,
+        ]
+
+        when_clauses = [
+            f"WHEN {alias}.status = '{status}' THEN {i + 1}"
+            for i, status in enumerate(statuses)
+        ]
+
+        return (
+            "CASE "
+            f"WHEN {alias}.sync_meta_id IS NULL THEN 0 "
+            f"{' '.join(when_clauses)} "
+            f"ELSE {len(statuses) + 1} "
+            "END"
+        )
 
 
 @attrs.define
@@ -253,8 +338,10 @@ class SearchBuilder:
     years: list[int] = attrs.field(factory=list)
     genres: list[str] = attrs.field(factory=list)
     creators: list[str] = attrs.field(factory=list)
+    custom_data: defaultdict[str, list[str]] = attrs.field(
+        factory=lambda: defaultdict(list)
+    )
     golden_notes: bool | None = None
-    downloaded: bool | None = None
 
     def filters(self) -> Iterator[str]:
         if _fts5_phrases(self.text):
@@ -268,7 +355,7 @@ class SearchBuilder:
             (self.editions, "usdb_song.edition"),
             (self.ratings, "usdb_song.rating"),
             (self.years, "usdb_song.year"),
-            (self.statuses, "session_usdb_song.status"),
+            (self.statuses, _STATUS_COLUMN),
         ):
             if vals:
                 yield _in_values_clause(col, cast(list, vals))
@@ -287,12 +374,15 @@ class SearchBuilder:
                 "usdb_song.song_id IN (SELECT song_id FROM usdb_song_creator WHERE"
                 f" {_in_values_clause('creator', self.creators)})"
             )
+        if self.custom_data:
+            yield (
+                "sync_meta.sync_meta_id IN (SELECT sync_meta_id FROM custom_meta_data "
+                f"WHERE {_custom_data_clause(self.custom_data)})"
+            )
         if self.views:
             yield _in_ranges_clause("usdb_song.views", self.views)
         if self.golden_notes is not None:
             yield "usdb_song.golden_notes = ?"
-        if self.downloaded is not None:
-            yield f"sync_meta.sync_meta_id IS {'NOT ' if self.downloaded else ''}NULL"
 
     def _where_clause(self) -> str:
         where = " AND ".join(self.filters())
@@ -315,6 +405,9 @@ class SearchBuilder:
         yield from self.languages
         yield from self.genres
         yield from self.creators
+        for key, values in self.custom_data.items():
+            yield key
+            yield from values
         for min_views, max_views in self.views:
             yield min_views
             if max_views is not None:
@@ -340,7 +433,7 @@ class SearchBuilder:
             dct[fields.statuses.name] = [
                 DownloadStatus(s) for s in dct[fields.statuses.name]
             ]
-            dct[fields.views.name] = [tuple(l) for l in dct[fields.views.name]]
+            dct[fields.views.name] = [tuple(item) for item in dct[fields.views.name]]
             return cls(**dct)
         except (
             json.decoder.JSONDecodeError,
@@ -349,7 +442,7 @@ class SearchBuilder:
             KeyError,
             ValueError,
         ):
-            logger.debug(traceback.format_exc())
+            logger.exception(None)
         return None
 
 
@@ -472,6 +565,13 @@ def _in_values_clause(attribute: str, values: list) -> str:
     return f"{attribute} IN ({', '.join('?' * len(values))})"
 
 
+def _custom_data_clause(key_values: dict[str, list[str]]) -> str:
+    return " AND ".join(
+        f"(key = ? AND value IN ({', '.join('?' * len(vals))}))"
+        for vals in key_values.values()
+    )
+
+
 def _in_ranges_clause(attribute: str, values: list[tuple[int, int | None]]) -> str:
     return " OR ".join(
         f"{attribute} >= ?{'' if val[1] is None else f' AND {attribute} < ?'}"
@@ -489,7 +589,7 @@ def _fts5_start_phrase(text: str) -> str:
     return f'''^ "{text.replace('"', "")}"'''
 
 
-### UsdbSong
+# UsdbSong
 
 
 def get_usdb_song(song_id: SongId) -> tuple | None:
@@ -506,6 +606,7 @@ class UsdbSongParams:
     """Parameters for inserting or updating a USDB song."""
 
     song_id: SongId
+    usdb_mtime: int
     artist: str
     title: str
     language: str
@@ -518,20 +619,26 @@ class UsdbSongParams:
     genre: str
     creator: str
     tags: str
-    status: DownloadStatus
-    is_playing: bool
 
 
 def upsert_usdb_song(params: UsdbSongParams) -> None:
     stmt = _SqlCache.get("upsert_usdb_song.sql")
     _DbState.connection().execute(stmt, params.__dict__)
-    stmt = _SqlCache.get("upsert_session_usdb_song.sql")
-    _DbState.connection().execute(stmt, params.__dict__)
 
 
-def upsert_usdb_songs(params: Iterable[UsdbSongParams]) -> None:
+def upsert_usdb_songs(params: list[UsdbSongParams]) -> None:
     stmt = _SqlCache.get("upsert_usdb_song.sql")
     _DbState.connection().executemany(stmt, (p.__dict__ for p in params))
+
+
+def set_usdb_song_status(song_id: SongId, status: DownloadStatus) -> None:
+    stmt = _SqlCache.get("upsert_usdb_song_status.sql")
+    _DbState.connection().execute(stmt, {"song_id": song_id, "status": status.for_db()})
+
+
+def set_usdb_song_playing(song_id: SongId, is_playing: bool) -> None:
+    stmt = _SqlCache.get("upsert_usdb_song_playing.sql")
+    _DbState.connection().execute(stmt, {"song_id": song_id, "is_playing": is_playing})
 
 
 def usdb_song_count() -> int:
@@ -541,6 +648,33 @@ def usdb_song_count() -> int:
 def max_usdb_song_id() -> SongId:
     row = _DbState.connection().execute("SELECT max(song_id) FROM usdb_song").fetchone()
     return SongId(row[0] or 0)
+
+
+@attrs.define
+class LastUsdbUpdate:
+    """Last USDB update information."""
+
+    usdb_mtime: int
+    song_ids: list[SongId]
+
+    @classmethod
+    def get(cls) -> LastUsdbUpdate:
+        rows = (
+            _DbState.connection()
+            .execute(
+                "SELECT usdb_mtime, song_id FROM usdb_song WHERE usdb_mtime = "
+                "(SELECT max(usdb_mtime) FROM usdb_song)"
+            )
+            .fetchall()
+        )
+        return cls(rows[0][0] if rows else 0, [SongId(r[1]) for r in rows])
+
+    @classmethod
+    def zero(cls) -> LastUsdbUpdate:
+        return cls(0, [])
+
+    def is_zero(self) -> bool:
+        return self.usdb_mtime == 0
 
 
 def delete_all_usdb_songs() -> None:
@@ -568,7 +702,11 @@ def find_similar_usdb_songs(artist: str, title: str) -> Iterable[SongId]:
     return (SongId(r[0]) for r in _DbState.connection().execute(stmt, params))
 
 
-### song filters
+def delete_session_data() -> None:
+    _DbState.connection().execute("DELETE FROM session_usdb_song")
+
+
+# song filters
 
 
 def upsert_usdb_songs_languages(params: list[tuple[SongId, Iterable[str]]]) -> None:
@@ -641,53 +779,56 @@ def usdb_song_genres() -> list[tuple[str, int]]:
 
 
 def usdb_song_creators() -> list[tuple[str, int]]:
-    stmt = "SELECT creator, COUNT(*) FROM usdb_song_creator GROUP BY creator ORDER BY creator"
+    stmt = (
+        "SELECT creator, COUNT(*) FROM usdb_song_creator GROUP BY creator ORDER BY "
+        "creator"
+    )
     return _DbState.connection().execute(stmt).fetchall()
 
 
 def search_usdb_song_artists(search: str) -> set[str]:
     stmt = "SELECT artist FROM fts_usdb_song WHERE artist MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_titles(search: str) -> set[str]:
     stmt = "SELECT title FROM fts_usdb_song WHERE title MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_editions(search: str) -> set[str]:
     stmt = "SELECT edition FROM fts_usdb_song WHERE edition MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_languages(search: str) -> set[str]:
     stmt = "SELECT language FROM fts_usdb_song WHERE language MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_years(search: str) -> set[int]:
     stmt = "SELECT year FROM fts_usdb_song WHERE year MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_genres(search: str) -> set[str]:
     stmt = "SELECT genre FROM fts_usdb_song WHERE genre MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
 def search_usdb_song_creators(search: str) -> set[str]:
     stmt = "SELECT creator FROM fts_usdb_song WHERE creator MATCH ?"
     rows = _DbState.connection().execute(stmt, (_fts5_phrases(search),)).fetchall()
-    return set(row[0] for row in rows)
+    return {row[0] for row in rows}
 
 
-### SyncMeta
+# SyncMeta
 
 
 def get_in_folder(folder: Path) -> list[tuple]:
@@ -715,6 +856,7 @@ class SyncMetaParams:
 
     sync_meta_id: SyncMetaId
     song_id: SongId
+    usdb_mtime: int
     path: str
     mtime: int
     meta_tags: str
@@ -742,6 +884,17 @@ def delete_sync_metas(ids: tuple[SyncMetaId, ...]) -> None:
         id_str = ", ".join("?" for _ in range(len(batch)))
         _DbState.connection().execute(
             f"DELETE FROM sync_meta WHERE sync_meta_id IN ({id_str})", batch
+        )
+
+
+def delete_sync_metas_in_folder(folder: Path, ids: tuple[SyncMetaId, ...]) -> None:
+    path = folder.as_posix()
+    for batch in batched(ids, _SQL_VARIABLES_LIMIT - 1):
+        id_str = ", ".join("?" for _ in range(len(batch)))
+        _DbState.connection().execute(
+            f"DELETE FROM sync_meta WHERE sync_meta_id IN ({id_str}) AND "
+            "path GLOB ? || '/*'",
+            (*batch, path),
         )
 
 
@@ -785,11 +938,11 @@ def get_custom_data_map() -> defaultdict[str, set[str]]:
     return data
 
 
-### ResourceFile
+# ResourceFile
 
 
-class ResourceFileKind(str, enum.Enum):
-    """Kinds of resource files."""
+class ResourceKind(str, enum.Enum):
+    """Kinds of resources."""
 
     TXT = "txt"
     AUDIO = "audio"
@@ -799,28 +952,39 @@ class ResourceFileKind(str, enum.Enum):
 
 
 @attrs.define(frozen=True, slots=False)
-class ResourceFileParams:
-    """Parameters for inserting or updating a resource file."""
+class ResourceParams:
+    """Parameters for inserting or updating a resource."""
 
     sync_meta_id: SyncMetaId
-    kind: ResourceFileKind
-    fname: str
-    mtime: int
-    resource: str
+    kind: ResourceKind
+    fname: str | None
+    mtime: int | None
+    resource: str | None
+    status: JobStatus
 
 
-def delete_resource_files(ids: Iterable[tuple[SyncMetaId, ResourceFileKind]]) -> None:
-    for batch in batched(ids, _SQL_VARIABLES_LIMIT // 2):
+def delete_resources(ids: Iterable[tuple[SyncMetaId, ResourceKind]]) -> None:
+    for batch in batched(ids, _SQL_SMALLER_THAN_EXPRESSION_TREE):
         if not batch:
             continue
         conditions = " OR ".join("(sync_meta_id = ? AND kind = ?)" for _ in batch)
         params = tuple(param for i, k in batch for param in (int(i), k.value))
         _DbState.connection().execute(
-            f"DELETE FROM resource_file WHERE {conditions}",
-            params,
+            f"DELETE FROM resource_file WHERE {conditions}", params
         )
 
 
-def upsert_resource_files(params: Iterable[ResourceFileParams]) -> None:
-    stmt = _SqlCache.get("upsert_resource_file.sql")
+def upsert_resources(params: Iterable[ResourceParams]) -> None:
+    stmt = _SqlCache.get("upsert_resource.sql")
     _DbState.connection().executemany(stmt, (p.__dict__ for p in params))
+
+
+# Discord webhook
+
+
+def maybe_insert_discord_notification(song_id: SongId, resource: str) -> bool:
+    """Does nothing if already present. Otherwise returns True."""
+    stmt = (
+        "INSERT OR IGNORE INTO discord_notification (song_id, resource) VALUES (?, ?)"
+    )
+    return _DbState.connection().execute(stmt, (song_id, resource)).rowcount > 0

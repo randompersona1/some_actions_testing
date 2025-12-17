@@ -7,12 +7,16 @@ from typing import assert_never
 
 import attrs
 
+from usdb_syncer import SongId as SongId
 from usdb_syncer import download_options, errors
-from usdb_syncer.logger import Log
-from usdb_syncer.meta_tags import MetaTags
+from usdb_syncer.logger import Logger
+from usdb_syncer.meta_tags import MedleyTag, MetaTags
 from usdb_syncer.settings import FixLinebreaks, FixSpaces
 from usdb_syncer.song_txt.headers import Headers
 from usdb_syncer.song_txt.tracks import Tracks
+
+MEDLEY_MIN_DURATION_SECONDS = 20
+MEDLEY_MAX_DURATION_SECONDS = 80
 
 
 @attrs.define()
@@ -22,10 +26,59 @@ class SongTxt:
     headers: Headers
     notes: Tracks
     meta_tags: MetaTags
-    logger: Log
+    logger: Logger
 
     def __str__(self) -> str:
         return f"{self.headers}\n{self.notes}"
+
+    def str_for_upload(
+        self,
+        sync_meta_tags: MetaTags | None = None,
+        remote_headers: Headers | None = None,
+    ) -> str:
+        """Reinserts metatags and ensures CRLF line endings."""
+
+        # ensure canonical format:
+        self.notes.fix_linebreaks_yass_style(self.headers.bpm, self.logger)
+        self.notes.fix_first_words_capitalization(self.logger)
+        self.notes.fix_spaces(FixSpaces.AFTER, self.logger)
+        self.notes.fix_quotation_marks(self.headers.language, self.logger)
+
+        # reinsert previously removed duet marker in title
+        if self.notes.track_2 is not None:
+            self.headers.title += " [DUET]"
+        if remote_headers:
+            # copy remote mp3 value (pot. changed due to illegal chars)
+            self.headers.mp3 = remote_headers.mp3
+            # older songs never have image headers, while newer ones always do
+            if remote_headers.cover:
+                self.headers.cover = remote_headers.cover
+            else:
+                self.headers.cover = None
+            if remote_headers.background:
+                self.headers.background = remote_headers.background
+            else:
+                self.headers.background = None
+        # reinsert meta tags
+        # TODO: find better way for the user to correct/extend metatags
+        if sync_meta_tags:
+            if self.meta_tags.is_empty():
+                # local file contains no meta tags, but we have meta tags from sync_meta
+                # give precendence to medley tags in local file
+                if (start := self.headers.medleystartbeat) and (
+                    end := self.headers.medleyendbeat
+                ):
+                    sync_meta_tags.medley = MedleyTag(start, end)
+                # give precendence to preview tag in local file
+                if preview := self.headers.previewstart:
+                    sync_meta_tags.preview = preview
+                self.headers.video = str(sync_meta_tags)
+            else:
+                # give meta tags in local file precedence, as the user must have
+                # manually reinserted them for a reason
+                self.headers.video = str(self.meta_tags)
+
+        return f"{self.headers.str_for_usdb()}\n{self.notes}".replace("\n", "\r\n")
 
     def unsynchronized_lyrics(self) -> str:
         track_1 = "\n".join(line.text().rstrip() for line in self.notes.track_1)
@@ -45,7 +98,7 @@ class SongTxt:
         ]
 
     @classmethod
-    def parse(cls, value: str, logger: Log) -> SongTxt:
+    def parse(cls, value: str, logger: Logger) -> SongTxt:
         lines = [line for line in value.splitlines() if line]
         headers = Headers.parse(lines, logger)
         meta_tags = MetaTags.parse(headers.video or "", logger)
@@ -55,11 +108,22 @@ class SongTxt:
         return cls(headers=headers, meta_tags=meta_tags, notes=notes, logger=logger)
 
     @classmethod
-    def try_parse(cls, value: str, logger: Log) -> SongTxt | None:
+    def try_parse(cls, value: str, logger: Logger) -> SongTxt | None:
         try:
             return cls.parse(value, logger)
-        except errors.NotesParseError:
+        except errors.TxtParseError:
             return None
+
+    @classmethod
+    def try_from_file(cls, path: Path, logger: Logger) -> SongTxt | None:
+        if not path.is_file():
+            return None
+        try:
+            txt = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.exception(None)
+            return None
+        return cls.try_parse(txt, logger)
 
     def maybe_split_duet_notes(self) -> None:
         if self.headers.relative and self.headers.relative.lower() == "yes":
@@ -72,9 +136,21 @@ class SongTxt:
             self.headers.p2 = self.meta_tags.player2 or "P2"
         if self.meta_tags.preview is not None and self.meta_tags.preview != 0.0:
             self.headers.previewstart = self.meta_tags.preview
-        if medley := self.meta_tags.medley:
+        if (
+            medley := self.notes.fix_medley_section(self.meta_tags.medley, self.logger)
+        ) is not None:
+            self.meta_tags.medley = medley
             self.headers.medleystartbeat = medley.start
             self.headers.medleyendbeat = medley.end
+            if (duration := self.medley_duration()) is not None:
+                if duration < MEDLEY_MIN_DURATION_SECONDS:
+                    self.logger.warning(
+                        f"Medley is unusually short: {duration} seconds."
+                    )
+                elif duration > MEDLEY_MAX_DURATION_SECONDS:
+                    self.logger.warning(
+                        f"Medley is unusually long: {duration} seconds."
+                    )
         if self.meta_tags.tags:
             self.headers.tags = self.meta_tags.tags
 
@@ -99,11 +175,13 @@ class SongTxt:
         self.fix_first_timestamp()
         self.fix_low_bpm()
         self.notes.fix_overlapping_and_touching_notes(self.logger)
+        self.notes.fix_zero_length_notes(self.logger)
         self.notes.fix_pitch_values(self.logger)
         self.notes.fix_apostrophes(self.logger)
         self.headers.fix_apostrophes(self.logger)
         self.notes.fix_all_caps(self.logger)
         self.headers.fix_language(self.logger)
+        self.headers.fix_videogap(self.meta_tags, self.logger)
         # optional fixes
         if txt_options:
             match txt_options.fix_linebreaks:
@@ -131,6 +209,17 @@ class SongTxt:
         minutes, seconds = divmod(minimum_secs, 60)
 
         return f"{minutes:02d}:{seconds:02d}"
+
+    def medley_duration(self) -> int | None:
+        """Return the medley duration in seconds or None if no medley is set."""
+        if not self.meta_tags.medley:
+            return None
+
+        return round(
+            self.headers.bpm.beats_to_secs(
+                self.meta_tags.medley.end - self.meta_tags.medley.start
+            )
+        )
 
     def fix_relative_songs(self) -> None:
         if not self.headers.relative:

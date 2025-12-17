@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Generic, ParamSpec
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Generic, ParamSpec
 
 import attrs
+
+from usdb_syncer.logger import logger
 
 if TYPE_CHECKING:
     from usdb_syncer import usdb_song
 
-# pylint currently lacks support for ParamSpec
-# https://github.com/pylint-dev/pylint/issues/9424
-# pylint: disable=arguments-differ
 
 P = ParamSpec("P")
 
@@ -36,7 +36,12 @@ class _Hook(Generic[P]):
     @classmethod
     def call(cls, *args: P.args, **kwargs: P.kwargs) -> None:
         for func in cls._subscribers:
-            func(*args, **kwargs)
+            try:
+                func(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    f"Plugin error in {func.__name__}: {type(e).__name__}: {e}"
+                )
 
 
 class SongLoaderDidFinish(_Hook):

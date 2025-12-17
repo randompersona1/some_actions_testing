@@ -9,12 +9,36 @@ Logging levels:
 """
 
 import logging
+from types import TracebackType
 from typing import Any
 
 from usdb_syncer import SongId
 
 
-class SongLogger(logging.LoggerAdapter):
+class Logger(logging.LoggerAdapter):
+    """Logger wrapper with our custom logic."""
+
+    def exception(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: (
+            bool
+            | tuple[type[BaseException], BaseException, TracebackType | None]
+            | tuple[None, None, None]
+            | BaseException
+            | None
+        ) = True,
+        **kwargs: Any,
+    ) -> None:
+        """Log exception info with debug and message with error level."""
+        if exc_info:
+            self.debug(None, exc_info=exc_info, **kwargs)
+        if msg:
+            self.error(msg, *args, exc_info=False, **kwargs)
+
+
+class SongLogger(Logger):
     """Logger wrapper that takes care of logging the song id."""
 
     def __init__(self, song_id: SongId, logger_: Any, extra: Any = ...) -> None:
@@ -25,14 +49,14 @@ class SongLogger(logging.LoggerAdapter):
         return f"#{self.song_id}: {msg}", kwargs
 
 
-Log = logging.Logger | SongLogger
 _LOGGER_NAME = "usdb_syncer"
-logger = logging.getLogger(_LOGGER_NAME)
-error_logger = logger.getChild("errors")
+_raw_logger = logging.getLogger(_LOGGER_NAME)
+logger = Logger(_raw_logger)
+error_logger = Logger(_raw_logger.getChild("errors"))
 error_logger.setLevel(logging.ERROR)
 
 
-def song_logger(song_id: SongId) -> Log:
+def song_logger(song_id: SongId) -> SongLogger:
     return SongLogger(song_id, logger)
 
 
@@ -46,3 +70,7 @@ def configure_logging(*handlers: logging.Handler) -> None:
         handlers=handlers,
     )
     logger.setLevel(logging.DEBUG)
+
+
+def add_root_handler(handler: logging.Handler) -> None:
+    logging.getLogger().addHandler(handler)

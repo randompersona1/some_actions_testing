@@ -1,20 +1,155 @@
+<!-- 0.19.0 -->
+
+# Changes
+
+## Features
+
+## Fixes
+
+## Developer notes
+
+- The build process was migrated to uv. Poetry is no longer used.
+  See the README for instructions.
+
+<!-- 0.18.0 -->
+
+# Changes
+- yt-dlp has been updated to latest available version 2025.11.12, solving latest download issues. This introduces Deno Javascript Runtime as new external dependency.
+The Syncer will inform you about this missing dependency and will give hints on how to install Deno on your OS.
+
+## Features
+
+- Medley sections are auto-corrected to start on the first beat of the first note of a line and to end of the last beat of the last note of a line.
+- Local changes can now be submitted to USDB. Please use this feature only for significant adaptations, enhancements and corrections (please use the comment function for small corrections, especially when it only concerns header values such as #GAP or #BPM).
+- The statuses of the resources (success/unchanged, fallback resource, unavailable/disabled, failed) is now indicated in the respective columns.
+
+## Fixes
+
+
+
+<!-- 0.17.0 -->
+
+# Changes
+
+## Features
+
+- A new dock widget displays the cover of the currently selected song.
+
+## Fixes
+
+- Handled HTML escapes in the USDB song list (e.g. `&` instead of `&amp;`).
+- Fixed running the webserver from the bundled app.
+- Check if webserver port is valid and not in use.
+
+<!-- 0.16.0 -->
+
+# Changes
+
+## Features
+
+- A webserver can be launched to let devices in the local network browse your song collection.
+- Added filters for custom data to the sidebar tree.
+- Files may be deleted permanently instead of being sent to the trash folder - useful to save disk space or if trashing is not supported on your system.
+- Medley sections are now checked if they start on a line start and end on a line end, otherwise a warning is issued.
+- The song previewer can be launched as a standalone window (`usdb_syncer preview path/to/song.txt`).
+
+## Fixes
+
+- Fixed deleting songs on startup that were removed from USDB.
+- The Syncer will now also retry for Vimeo resources with logged-in cookies if necessary.
+
+<!-- 0.15.0 -->
+
+# Changes
+
+## Features
+
+- Upon start, not only new songs are fetched, but updates for existing songs as well.
+  - The first launch may take a while, because the song list has to be rebuilt.
+- There are now shortcuts for commonly used actions.
+- Added Tune Perfect (https://tuneperfect.org/) to supported apps. You can now open a selected song in Tune Perfect directly via the Syncer.
+- Meta tags parsing is now case insensitive.
+- Don't overwrite song txt if contents haven't changed (preserve metadata).
+- Local songs may be automatically trashed if the according USDB songs were removed.
+- The columns of the song table may be reorganized by drag-and-drop.
+
+## Fixes
+
+- Fixed extraction of allowed countries for geo-restricted resources.
+- The song directory now defaults to ~/songs to avoid possible permission issues with the current directory.
+- Enable the app to run if sounddevice / portaudio is not available (required for the preview feature).
+
+<!-- 0.14.0 -->
+
+# Changes
+
+## Features
+
+- Check out how a downloaded song will appear in-game with the _Preview Song_ feature!
+
+## Fixes
+
+- Fixed the Linux bundle.
+- Fixed an error on startup for large collections.
+
+<!-- 0.13.0 -->
+
+# Changes
+
+## Features
+
+- We are now on PyPI! Simply install and update USDB Syncer with your favourite package manager, e.g. [pipx](https://pipx.pypa.io/stable/): `pipx install usdb_syncer`
+- We got a dark mode, and it's even customisable! Try it out with the View tab in the settings.
+- Image resources are now redownloaded if metatag postprocessing parameters have changed.
+
+## Developer notes
+
+- All previously accepted environment variables have been converted to commandline arguments. Check out `poetry run usdb_syncer -h`.
+- pylint, black and isort have been replaced with [ruff](https://docs.astral.sh/ruff/), making the tox pipeline run much faster. ruff also integrates with common code editors.
+- The hook `MainWindowDidLoad` was moved to the new module `usdb_syncer.gui.hooks`. This will contain all hooks called from the GUI going forward.
+
+<!-- 0.12.1 -->
+
+# Changes
+
+## Fixes
+
+- Fix ReplayGain for Windows (by updating ffmpeg-normalize).
+
 <!-- 0.12.0 -->
 
 # Changes
 
 ## Fixes
 
+- Audio/video format selection regression in 0.11.0 fixed.
+- Downloads of non-jpg images are now correctly converted to jpg.
+- Image processing order is now correctly handled (crop before resize for covers, resize before crop for backgrounds).
+- Improve compatibility of Linux bundle with older distributions (glibc >= 2.34).
+
 ## Features
+
 - The Syncer now checks if a new version is available.
+- Infos about unavailable or invalid resources are now sent to Discord (**please enable this in the settings to support the community**).
+- Songs can now be rated on USDB via the Syncer (1-5 star rating).
+- Artist initial is now available for templates.
+- Audio normalization has a new option ReplayGain. If your karaoke software supports ReplayGain (e.g. UltraStar deluxe >= 2025.4.0), this is the preferred option as it does not reencode the audio file but instead only writes normalization information into the header of the audio file.
+- PDF report (song list) creation has been fixed and extended.
+
+## Developer notes
+
+- Added hook when MainWindow was loaded.
 
 <!-- 0.11.0 -->
 
 # Changes
 
 ## Fixes
+
 - Cover postprocessing parameters are ignored if USDB cover is downloaded as fallback.
 
 ## Features
+
 - Add more fine-grained options for video container/codec selection.
 
 <!-- 0.10.0 -->
@@ -26,6 +161,7 @@
 - The check for existing / outdated local resources has been improved to account for different precisions of modified times for different file systems.
 - Provide binaries for Intel-based MacOS systems.
 - YouTube logged-in cookies are now used for age-restricted resources.
+- Games started from within the Syncer are properly cleaned up, fixing subsequent starts.
 
 ## Features
 

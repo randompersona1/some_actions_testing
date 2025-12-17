@@ -1,10 +1,7 @@
 """General-purpose utilities for the GUI."""
 
-from typing import Any, Callable
-
 import attrs
-from PySide6.QtCore import QObject, Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication
 
 
@@ -15,10 +12,6 @@ class Modifiers:
     ctrl: bool
     shift: bool
     alt: bool
-
-
-def set_shortcut(key: str, parent: QObject, func: Callable[[], Any]) -> None:
-    QShortcut(QKeySequence(key), parent).activated.connect(func)
 
 
 def scroll_to_bottom(scroll_area: QAbstractScrollArea) -> None:

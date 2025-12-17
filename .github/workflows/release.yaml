@@ -1,9 +1,16 @@
 name: Release
 
 on:
-  pull_request:
-    branches:
-      - main
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+" # Only create releases on matching tags following semver X.Y.Z
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no release, publish to TestPyPI)'
+        required: true
+        default: true
+        type: boolean
 
 jobs:
   scrape-song-list:
@@ -15,15 +22,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install poetry
-        run: |
-          python -m pip install poetry
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Add uv to PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Install dependencies
-        run: |
-          poetry install --without dev --without build
+        run: uv sync --no-dev --no-group bundle
       - name: Scrape USDB song list to ship with the bundle
         run: >
-          poetry run generate_song_list_json
+          uv run python -m tools.generate_song_list_json
           -t 'song_list.json'
           -u '${{ secrets.USDB_USER }}'
           -p '${{ secrets.USDB_PASSWORD }}'
@@ -34,8 +41,8 @@ jobs:
             song_list.json
             CHANGELOG.md
 
-  build:
-    name: Build packages
+  bundle:
+    name: Build bundles
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.image }}
     needs: scrape-song-list
@@ -47,32 +54,57 @@ jobs:
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
-              --add-data 'artifacts/song_list.json:data'
-              --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
+              --add-data 'artifacts/song_list.json:usdb_syncer/data'
+              --add-data 'src/usdb_syncer/db/sql:usdb_syncer/db/sql'
+              --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
+              --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
+              --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
+              --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
           - os: macos-latest
             TARGET: macOS-arm64
             PYINSTALLER_ARGS: >-
               --windowed
-              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
-              --add-data 'artifacts/song_list.json:data'
-              --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
-          - os: macos-13
+              --icon src/usdb_syncer/gui/resources/qt/appicon_128x128.png
+              --add-data 'artifacts/song_list.json:usdb_syncer/data'
+              --add-data 'src/usdb_syncer/db/sql:usdb_syncer/db/sql'
+              --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
+              --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
+              --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
+              --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
+          - os: macos-15-intel
             TARGET: macOS-x64
             PYINSTALLER_ARGS: >-
               --windowed
-              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
-              --add-data 'artifacts/song_list.json:data'
-              --add-data 'src/usdb_syncer/db/sql:src/usdb_syncer/db/sql'
+              --icon src/usdb_syncer/gui/resources/qt/appicon_128x128.png
+              --add-data 'artifacts/song_list.json:usdb_syncer/data'
+              --add-data 'src/usdb_syncer/db/sql:usdb_syncer/db/sql'
+              --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
+              --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
+              --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
+              --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
           - os: windows-latest
             TARGET: Windows
             PYINSTALLER_ARGS: >-
               --onefile
-              --icon src/usdb_syncer/gui/resources/appicon_128x128.png
-              --add-data 'artifacts/song_list.json;data'
-              --add-data 'src/usdb_syncer/db/sql;src/usdb_syncer/db/sql'
+              --icon src/usdb_syncer/gui/resources/qt/appicon_128x128.png
+              --add-data 'artifacts/song_list.json;usdb_syncer/data'
+              --add-data 'src/usdb_syncer/db/sql;usdb_syncer/db/sql'
+              --add-data 'src/usdb_syncer/gui/resources/fonts;usdb_syncer/gui/resources/fonts'
+              --add-data 'src/usdb_syncer/gui/resources/styles;usdb_syncer/gui/resources/styles'
+              --add-data 'src/usdb_syncer/gui/resources/audio;usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/webserver/static;usdb_syncer/webserver/static'
+              --add-data 'src/usdb_syncer/webserver/templates;usdb_syncer/webserver/templates'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
+      - name: Mark Git directory as safe
+        if: contains(matrix.os, 'ubuntu')
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: On macOS and windows, install python normally
         if: contains(matrix.os, 'macos') || contains(matrix.os, 'windows')
         uses: actions/setup-python@v5
@@ -83,7 +115,7 @@ jobs:
         run: |
           yum update -y
           yum groupinstall 'Development Tools' -y
-          yum install libxcb libxkbcommon libxkbcommon-x11 xcb-util xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm libva mesa-libGLU libX11 libXext libXrender mesa-libGL openssl-devel bzip2-devel libffi-devel sqlite-devel wget -y
+          yum install libxcb libxkbcommon libxkbcommon-x11 xcb-util xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm xcb-util-cursor libva mesa-libGLU libX11 libXext libXrender mesa-libGL openssl-devel bzip2-devel libffi-devel sqlite-devel wget -y
           wget https://www.python.org/ftp/python/3.12.9/Python-3.12.9.tgz
           tar xvf Python-3.12.9.tgz
           cd Python-3.12.9
@@ -100,25 +132,27 @@ jobs:
           ln -sf /usr/local/bin/pip3.12 /usr/bin/pip
           python --version
           python -m pip install --upgrade pip
-      - name: Install poetry
-        run: |
-          python -m pip install poetry
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Add uv to PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Install dependencies
+        run: uv sync --no-dev
+      - name: Set macOS deployment target (macOS 12+ compatibility)
+        if: startsWith(matrix.os, 'macos')
+        run: echo "MACOSX_DEPLOYMENT_TARGET=12.0" >> $GITHUB_ENV
+      - name: Write release version
+        shell: bash
         run: |
-          poetry install --without dev
-      - name: Write version and commit hash
-        run: >
-          poetry run write_release_info
-          -p src/usdb_syncer/constants.py
-          -v ${{ github.ref_name }}
-          -c ${{ github.workflow_sha }}
+          set -e
+          version=$(uv run dunamai from git)
+          echo "__version__ = '${version}'" > src/usdb_syncer/_version.py
       - name: Generate GUI elements
-        run: poetry run generate_pyside_files
-      - name: Build with pyinstaller for ${{matrix.os}}
-        # _tkinter hook is run erroneously?
+        run: uv run python -m tools.generate_pyside_files
+      - name: Bundle with pyinstaller for ${{matrix.os}}
         run: >
-          poetry run pyinstaller
-          -n 'USDB_Syncer-0.11.0-${{matrix.TARGET}}'
+          uv run pyinstaller
+          -n 'USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}'
           --exclude-module _tkinter
           ${{matrix.PYINSTALLER_ARGS}}
           src/usdb_syncer/gui/__init__.py
@@ -128,18 +162,18 @@ jobs:
           brew install create-dmg
           create-dmg \
             --volname "USDB Syncer" \
-            --volicon "src/usdb_syncer/gui/resources/appicon_128x128.png" \
+            --volicon "src/usdb_syncer/gui/resources/qt/appicon_128x128.png" \
             --window-pos 200 120 \
             --window-size 600 300 \
             --icon-size 128 \
             --text-size 14 \
-            --icon "USDB_Syncer-0.11.0-${{matrix.TARGET}}.app" 175 120 \
-            --hide-extension "USDB_Syncer-0.11.0-${{matrix.TARGET}}.app" \
+            --icon "USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.app" 175 120 \
+            --hide-extension "USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.app" \
             --app-drop-link 425 120 \
             --hdiutil-quiet \
             --no-internet-enable \
-            "dist/USDB_Syncer-0.11.0-${{matrix.TARGET}}.dmg" \
-            "dist/USDB_Syncer-0.11.0-${{matrix.TARGET}}.app"
+            "dist/USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.dmg" \
+            "dist/USDB_Syncer-${{github.ref_name}}-${{matrix.TARGET}}.app"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-artifacts
@@ -149,11 +183,67 @@ jobs:
             dist/*.exe
 
   release:
+    if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
     name: Create release
     permissions:
       contents: write
-    needs: build
+    needs: bundle
     runs-on: ubuntu-latest
     steps:
-      - name: "Mock release"
-        run: echo "Mock release"
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Extract Release Notes
+        id: extract_notes
+        run: >
+          awk 'BEGIN { RS="<!-- [0-9]+\\.[0-9]+\\.[0-9]+ -->\\s*"; ORS=""; }
+          NR==2 { print $0; exit; }'
+          artifacts/CHANGELOG.md >CHANGELOG.md
+        shell: bash
+      - uses: ncipollo/release-action@v1
+        with:
+          artifacts: "artifacts/USDB_Syncer*"
+          bodyFile: "CHANGELOG.md"
+
+  publish:
+    name: Build and publish release to PyPI
+    needs: bundle
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.dry_run == 'true' && 'testpypi' || 'pypi' }}
+      url: ${{ github.event.inputs.dry_run == 'true' && 'https://test.pypi.org/p/usdb_syncer' || 'https://pypi.org/p/usdb_syncer' }}
+    permissions:
+      id-token: write # IMPORTANT: this permission is mandatory for trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Add uv to PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Install dependencies
+        run: uv sync --group build
+      - name: Write release version
+        run: echo "__version__ = '$(uv run dunamai from git)'" > src/usdb_syncer/_version.py
+      - name: Generate GUI elements
+        run: uv run python -m tools.generate_pyside_files
+      - name: Build package
+        run: uv build
+      - name: Publish package distributions to PyPI
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
+      - name: Publish package distributions to TestPyPI
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          verbose: true
