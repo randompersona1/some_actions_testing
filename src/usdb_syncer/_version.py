@@ -1,5 +1,5 @@
-"""For builds and bundles, this is replaced with the hardcoded release version."""
+"""Version is set by hatch during build"""
 
-import dunamai as _dunamai
+from importlib.metadata import version
 
-__version__ = _dunamai.Version.from_git().serialize()
+__version__ = version("usdb_syncer")
