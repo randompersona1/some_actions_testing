@@ -7,7 +7,7 @@ jobs:
   build:
     name: Build the bundle
     runs-on: ubuntu-latest
-    container: ghcr.io/bohning/syncer_linux_builder_image:latest
+    container: ghcr.io/randompersona1/syncer_linux_builder_image:latest
     steps:
       - uses: actions/checkout@v6
         with:
