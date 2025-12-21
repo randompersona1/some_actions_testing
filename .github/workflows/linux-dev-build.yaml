@@ -13,7 +13,7 @@ jobs:
         with:
           fetch-depth: 0
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - run: uv sync --no-dev
+      - run: uv sync --no-dev --with bundle
       - run: uv run python -m tools.generate_pyside_files
       - run: >
           uv run pyinstaller -n 'USDB_Syncer_LinuxTestBuild-${{github.ref_name}}-${{github.run_number}}'
