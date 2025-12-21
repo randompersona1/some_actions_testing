@@ -44,6 +44,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.image }}
     needs: scrape-song-list
+    env:
+      UV_PYTHON_PREFERENCE: only-system
     strategy:
       matrix:
         include:
