@@ -48,7 +48,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            image: ghcr.io/randompersona1/usdb_syncer_linux_build_image:latest
+            image: ghcr.io/randompersona1/syncer_linux_builder_image:latest:latest
             TARGET: Linux
             PYINSTALLER_ARGS: >-
               --onefile
