@@ -1,5 +1,7 @@
 FROM quay.io/pypa/manylinux_2_34_x86_64:latest
 
+RUN rm -rf /opt/python
+
 LABEL maintainer="usdb_syncer developers"
 LABEL org.opencontainers.image.base.name="quay.io/pypa/manylinux_2_34_x86_64:latest"
 LABEL org.opencontainers.image.source="https://github.com/bohning/usdb_syncer"
@@ -11,3 +13,4 @@ RUN yum install libxcb libxkbcommon libxkbcommon-x11 xcb-util xcb-util-image xcb
 RUN rm -rf /Python-3.12.9 && rm -rf Python-3.12.9.tgz
 
 RUN ldconfig /usr/local/lib && ln -sf /usr/local/bin/python3.12 /usr/bin/python3.12 && ln -sf /usr/local/bin/pip3.12 /usr/bin/pip3.12 &&  ln -sf /usr/local/bin/python3.12 /usr/bin/python3 &&  ln -sf /usr/local/bin/pip3.12 /usr/bin/pip3 &&  ln -sf /usr/local/bin/python3.12 /usr/bin/python && ln -sf /usr/local/bin/pip3.12 /usr/bin/pip
+
