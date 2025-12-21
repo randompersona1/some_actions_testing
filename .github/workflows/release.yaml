@@ -57,6 +57,7 @@ jobs:
               --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
               --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
               --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/gui/resources/text:usdb_syncer/gui/resources/text'
               --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
               --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
           - os: macos-latest
@@ -69,6 +70,7 @@ jobs:
               --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
               --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
               --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/gui/resources/text:usdb_syncer/gui/resources/text'
               --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
               --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
           - os: macos-15-intel
@@ -81,6 +83,7 @@ jobs:
               --add-data 'src/usdb_syncer/gui/resources/fonts:usdb_syncer/gui/resources/fonts'
               --add-data 'src/usdb_syncer/gui/resources/styles:usdb_syncer/gui/resources/styles'
               --add-data 'src/usdb_syncer/gui/resources/audio:usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/gui/resources/text:usdb_syncer/gui/resources/text'
               --add-data 'src/usdb_syncer/webserver/static:usdb_syncer/webserver/static'
               --add-data 'src/usdb_syncer/webserver/templates:usdb_syncer/webserver/templates'
           - os: windows-latest
@@ -93,6 +96,7 @@ jobs:
               --add-data 'src/usdb_syncer/gui/resources/fonts;usdb_syncer/gui/resources/fonts'
               --add-data 'src/usdb_syncer/gui/resources/styles;usdb_syncer/gui/resources/styles'
               --add-data 'src/usdb_syncer/gui/resources/audio;usdb_syncer/gui/resources/audio'
+              --add-data 'src/usdb_syncer/gui/resources/text;usdb_syncer/gui/resources/text'
               --add-data 'src/usdb_syncer/webserver/static;usdb_syncer/webserver/static'
               --add-data 'src/usdb_syncer/webserver/templates;usdb_syncer/webserver/templates'
     steps:
@@ -173,17 +177,24 @@ jobs:
             dist/*.exe
 
   release:
-    if: ${{ github.event_name == 'push' || github.event.inputs.dry_run == 'false' }}
     name: Create release
     permissions:
       contents: write
     needs: bundle
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: Zip USDB_SYNCER* binaries
+        run: |
+          for file in artifacts/USDB_Syncer*; do
+            zip -0 -r "${file}.zip" "$file" licenses LICENSE NOTICE.txt
+          done
       - name: Extract Release Notes
         id: extract_notes
         run: >
@@ -193,7 +204,7 @@ jobs:
         shell: bash
       - uses: ncipollo/release-action@v1
         with:
-          artifacts: "artifacts/USDB_Syncer*"
+          artifacts: "artifacts/USDB_Syncer*.zip"
           bodyFile: "CHANGELOG.md"
 
   publish:
