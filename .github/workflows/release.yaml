@@ -7,9 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run (no release, publish to TestPyPI)"
+        description: "Dry run (no release, just generate the binaries)"
         required: true
         default: true
+        type: boolean
+      dry_publish_testpypi:
+        description: "Publish to testpypi (if dry run is active)"
+        required: true
+        default: false
         type: boolean
 
 jobs:
@@ -115,6 +120,10 @@ jobs:
           bodyFile: "CHANGELOG.md"
 
   publish:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.inputs.dry_run == 'false' ||
+      (github.event.inputs.dry_run == 'true' && github.event.inputs.dry_publish_testpypi == 'true')
     name: Build and publish release to PyPI
     needs: bundle
     runs-on: ubuntu-latest
