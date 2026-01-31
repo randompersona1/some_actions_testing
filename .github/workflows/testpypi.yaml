@@ -1,15 +1,19 @@
-name: Upload to testpypi
+name: Dev uploads to pypi
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  pull_request:
 
 jobs:
   upload:
-    name: Upload to TestPyPI
+    # If git tag is clean (no +build metadata), skip this job
+    if: contains(github.ref , '+')
+    name: Upload to PyPI
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,8 +27,10 @@ jobs:
       - name: Generate pyside files
         run: uv run --no-dev python -m tools.generate_pyside_files
       - name: Get version from hatch
+        id: get_version
         run: |
           RAW_VERSION=$(uv run --with hatch hatch version)
+          echo "RAW_VERSION=$RAW_VERSION" >> ${GITHUB_OUTPUT}
 
           CLEAN_VERSION="${RAW_VERSION%+*}"
 
@@ -32,9 +38,10 @@ jobs:
 
           echo "Created temporary tag: v$CLEAN_VERSION"
       - name: Build the wheel
+        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
         run: uv build --wheel --force-pep517
       - name: Upload to TestPyPI
+        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
-          repository-url: https://test.pypi.org/legacy/
