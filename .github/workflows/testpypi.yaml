@@ -8,8 +8,6 @@ on:
 
 jobs:
   upload:
-    # If git tag is clean (no +build metadata), skip this job
-    if: contains(github.ref , '+')
     name: Upload to PyPI
     runs-on: ubuntu-latest
     permissions:
