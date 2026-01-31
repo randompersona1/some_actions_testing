@@ -85,15 +85,15 @@ jobs:
         if: matrix.COMPATIBILITY == 'ubuntu'
         run: |
           apt update
-          apt install -y libgl1 libegl1 libva2 libva-drm2 libva-x11-2 pulseaudio libpipewire-0.3-0 libasound2 libjack-jackd2-0 xvfb
+          apt install -y libgl1 libegl1 libva2 libva-drm2 libva-x11-2 pulseaudio libpipewire-0.3-0 libportaudio2 xvfb
       - name: Set up fedora packages
         if: matrix.COMPATIBILITY == 'fedora'
         run: |
-          dnf install -y dbus-daemon libva pulseaudio pipewire alsa-lib jack-audio-connection-kit xorg-x11-server-Xvfb
+          dnf install -y dbus-daemon libva pulseaudio pipewire portaudio xorg-x11-server-Xvfb
       - name: Set up archlinux packages
         if: matrix.COMPATIBILITY == 'archlinux'
         run: |
-          pacman -Sy --noconfirm dbus libva pulseaudio pipewire alsa-lib jack2 xorg-server-xvfb
+          pacman -Sy --noconfirm dbus libva pulseaudio pipewire portaudio xorg-server-xvfb
           groupadd -g 500 pulse
           useradd -u 500 -g pulse -d /var/run/pulse -s /usr/bin/nologin pulse
           usermod -aG audio pulse

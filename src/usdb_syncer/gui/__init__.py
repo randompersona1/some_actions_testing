@@ -332,7 +332,8 @@ def _run_heathcheck() -> int:
         NOTICE.read_text()
 
         # audio check
-        import sounddevice  # noqa: F401
+        with utils.LinuxEnvCleaner():
+            import sounddevice  # noqa: F401
 
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()

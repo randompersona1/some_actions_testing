@@ -61,14 +61,7 @@ def bundle(platform: OS, version: str, with_songlist: bool = False) -> None:
                 ]
             )
         case OS.LINUX:
-            # fmt: off
-            args.extend(
-                [
-                    "--onefile",
-                    "--add-binary", "/usr/lib64/libportaudio.so.2:libportaudio.so"
-                ]
-            )
-            # fmt: on
+            args.extend(["--onefile"])
         case _:
             assert_never(platform)
     try:
