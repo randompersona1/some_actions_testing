@@ -65,7 +65,7 @@ def bundle(platform: OS, version: str, with_songlist: bool = False) -> None:
             args.extend(
                 [
                     "--onefile",
-                    "--add-binary", "/usr/lib/x86_64-linux-gnu/libportaudio.so.2:libportaudio.so"
+                    "--add-binary", "/usr/lib64/libportaudio.so.2:libportaudio.so"
                 ]
             )
             # fmt: on
