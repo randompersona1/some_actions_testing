@@ -39,13 +39,13 @@ jobs:
       - name: Debug Context
         run: echo "${{ toJSON(steps.get_version.outputs) }}"
       - name: Generate pyside files
-        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
+        if: "!contains(steps.get_version.outputs.RAW_VERSION, '+')"
         run: uv run --no-dev python -m tools.generate_pyside_files
       - name: Build the wheel
-        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
+        if: "!contains(steps.get_version.outputs.RAW_VERSION, '+')"
         run: uv build --wheel --force-pep517
       - name: Upload to TestPyPI
-        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
+        if: "!contains(steps.get_version.outputs.RAW_VERSION, '+')"
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           verbose: true
