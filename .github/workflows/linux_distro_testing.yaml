@@ -183,6 +183,7 @@ jobs:
           dbus-daemon --system --fork
           mkdir -p /etc/pulse/client.conf.d
           pulseaudio -D --system --disallow-exit --exit-idle-time=-1
+          export LD_DEBUG=libs
           export QT_FATAL_WARNINGS=1
           export LC_CTYPE="C.utf8"
 
