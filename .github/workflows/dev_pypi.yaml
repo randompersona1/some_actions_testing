@@ -22,8 +22,6 @@ jobs:
           python-version: "3.12"
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
-      - name: Generate pyside files
-        run: uv run --no-dev python -m tools.generate_pyside_files
       - name: Get version from hatch
         id: get_version
         run: |
@@ -38,6 +36,11 @@ jobs:
           git tag -a "v$CLEAN_VERSION" -m "Local tag"
 
           echo "Created temporary tag: v$CLEAN_VERSION"
+      - name: Debug Context
+        run: echo "${{ toJSON(steps.get_version.outputs) }}"
+      - name: Generate pyside files
+        if: contains(steps.get_version.outputs.RAW_VERSION, '+')
+        run: uv run --no-dev python -m tools.generate_pyside_files
       - name: Build the wheel
         if: contains(steps.get_version.outputs.RAW_VERSION, '+')
         run: uv build --wheel --force-pep517
