@@ -107,7 +107,7 @@ jobs:
           export LC_CTYPE="C.utf8"
 
           chmod +x ./USDB_Syncer-TestBuild-Linux
-          xvfb-run -a timeout 120s ./USDB_Syncer-TestBuild-Linux --healthcheck
+          xvfb-run -a timeout 60s ./USDB_Syncer-TestBuild-Linux --healthcheck
 
   test_wheel:
     name: Test wheel
@@ -191,4 +191,4 @@ jobs:
           . .venv/bin/activate
           python -m ensurepip
           python -m pip install ./*.whl
-          xvfb-run -a timeout 60s usdb_syncer --healthcheck
+          xvfb-run -a timeout 60s env LD_DEBUG=libs usdb_syncer --healthcheck 2>&1
