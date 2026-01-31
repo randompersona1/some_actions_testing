@@ -85,15 +85,15 @@ jobs:
         if: matrix.COMPATIBILITY == 'ubuntu'
         run: |
           apt update
-          apt install -y libgl1 libegl1 libva2 libva-drm2 libva-x11-2 pulseaudio libpipewire-0.3-0 xvfb
+          apt install -y libgl1 libegl1 libva2 libva-drm2 libva-x11-2 pulseaudio libpipewire-0.3-0 libasound2 libjack-jackd2-0 xvfb
       - name: Set up fedora packages
         if: matrix.COMPATIBILITY == 'fedora'
         run: |
-          dnf install -y dbus-daemon libva pulseaudio pipewire xorg-x11-server-Xvfb
+          dnf install -y dbus-daemon libva pulseaudio pipewire alsa-lib jack-audio-connection-kit xorg-x11-server-Xvfb
       - name: Set up archlinux packages
         if: matrix.COMPATIBILITY == 'archlinux'
         run: |
-          pacman -Sy --noconfirm dbus libva pulseaudio pipewire xorg-server-xvfb
+          pacman -Sy --noconfirm dbus libva pulseaudio pipewire alsa-lib jack2 xorg-server-xvfb
           groupadd -g 500 pulse
           useradd -u 500 -g pulse -d /var/run/pulse -s /usr/bin/nologin pulse
           usermod -aG audio pulse
@@ -183,7 +183,6 @@ jobs:
           dbus-daemon --system --fork
           mkdir -p /etc/pulse/client.conf.d
           pulseaudio -D --system --disallow-exit --exit-idle-time=-1
-          export LD_DEBUG=libs
           export QT_FATAL_WARNINGS=1
           export LC_CTYPE="C.utf8"
 
@@ -191,4 +190,4 @@ jobs:
           . .venv/bin/activate
           python -m ensurepip
           python -m pip install ./*.whl
-          xvfb-run -a timeout 60s env LD_DEBUG=libs usdb_syncer --healthcheck 2>&1
+          xvfb-run -a timeout 60s usdb_syncer --healthcheck
