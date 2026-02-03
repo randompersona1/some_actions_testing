@@ -1,9 +1,6 @@
 name: Test bundles and wheels on multiple Linux distros
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
